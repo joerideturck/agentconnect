@@ -1146,6 +1146,7 @@ export const SkillSourceDto = z.object({
   ref: z.string().nullable(),
   subDir: z.string().nullable(),
   skills: z.array(z.string()), // the source's own skill filter ([] ⇒ all)
+  private: z.boolean(), // repo was private at bind time ⇒ acquired through the org GitHub App
   visibility: z.string(), // 'org' | 'restricted'
   sharedWith: z.array(z.string()),
   createdBy: z.string().nullable(),
@@ -1170,7 +1171,8 @@ export const AgentSkillSourceDto = z.object({
   source: z.string(),
   ref: z.string().nullable(),
   subDir: z.string().nullable(),
-  skills: z.array(z.string()) // the source's own skill filter ([] ⇒ all)
+  skills: z.array(z.string()), // the source's own skill filter ([] ⇒ all)
+  private: z.boolean()
 })
 export const AgentSkillSourceListDto = z.array(AgentSkillSourceDto)
 

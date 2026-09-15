@@ -1057,6 +1057,7 @@ export function buildContainer(
         installations: repos.githubInstallation,
         installState: repos.githubInstallState,
         repoAuths: repos.agentRepoAuth,
+        skillSources: repos.skillSource,
         agents: repos.agent,
         onInstallationFactsChanged: wakeGithubReviewProjections,
         pepper: config.API_KEY_PEPPER,

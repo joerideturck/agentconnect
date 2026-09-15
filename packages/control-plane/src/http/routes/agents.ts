@@ -2201,7 +2201,8 @@ export function agentRoutes(deps: HttpDeps) {
                   source: redactSourceCredentials(s.source),
                   ref: s.ref,
                   subDir: s.subDir,
-                  skills: s.skills
+                  skills: s.skills,
+                  private: s.private
                 }
               ]
             : []
