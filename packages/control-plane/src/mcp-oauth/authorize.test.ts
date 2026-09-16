@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { buildAuthorizeUrl, issuerResponseValid, pkceChallenge, pkcePair } from './authorize.js'
+import {
+  buildAuthorizeUrl,
+  refreshTokenRequestParams,
+  issuerResponseValid,
+  pkceChallenge,
+  pkcePair
+} from './authorize.js'
 import { exchangeCode, refreshGrant, type TokenClient } from './token-endpoint.js'
 import type { AuthServerMetadata, Dial } from './discovery.js'
 import type { GuardedResult } from '../net/guarded-fetch.js'
@@ -64,8 +70,38 @@ describe('buildAuthorizeUrl', () => {
       code_challenge: 'challenge-1',
       code_challenge_method: 'S256',
       resource: 'https://mcp.example.test/mcp',
-      scope: 'files:read files:write'
+      scope: 'files:read files:write',
+      access_type: 'offline'
     })
+  })
+
+  it('asks Google for a refresh token on every authorization: access_type=offline and prompt=consent', () => {
+    const url = new URL(
+      buildAuthorizeUrl({
+        metadata: {
+          ...AS,
+          issuer: 'https://accounts.google.com',
+          authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth'
+        },
+        clientId: 'c',
+        redirectUri: 'https://console.example.test/cb',
+        state: 's',
+        codeChallenge: 'c1',
+        scopes: ['https://www.googleapis.com/auth/logging.admin'],
+        resource: 'https://logging.googleapis.com/mcp'
+      })
+    )
+    expect(url.searchParams.get('access_type')).toBe('offline')
+    expect(url.searchParams.get('prompt')).toBe('consent')
+  })
+
+  it('sends prompt=consent to Google only — other servers get just the RFC-ignorable access_type', () => {
+    expect(refreshTokenRequestParams('https://accounts.google.com')).toEqual({
+      access_type: 'offline',
+      prompt: 'consent'
+    })
+    expect(refreshTokenRequestParams('https://auth.example.test')).toEqual({ access_type: 'offline' })
+    expect(refreshTokenRequestParams('not a url')).toEqual({ access_type: 'offline' })
   })
 
   it('omits scope entirely when none is known, rather than sending an empty one', () => {

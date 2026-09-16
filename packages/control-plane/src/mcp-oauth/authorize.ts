@@ -55,7 +55,30 @@ export function buildAuthorizeUrl(req: AuthorizeRequest): string {
   url.searchParams.set('code_challenge_method', 'S256')
   url.searchParams.set('resource', req.resource)
   if (req.scopes.length > 0) url.searchParams.set('scope', req.scopes.join(' '))
+  for (const [k, v] of Object.entries(refreshTokenRequestParams(req.metadata.issuer))) url.searchParams.set(k, v)
   return url.toString()
+}
+
+/**
+ * Parameters some authorization servers need before they will issue a REFRESH token at all.
+ * The relay binding lives on a refresh token (refresher.ts): a grant without one works for
+ * exactly one access-token lifetime and then lands in `reauth_required`, so this is not a
+ * nicety. RFC 6749 §3.1 obliges every server to ignore parameters it does not recognize, which
+ * is what makes `access_type=offline` safe to send everywhere.
+ *
+ *  - Google (`accounts.google.com`) returns a refresh token only for `access_type=offline`, and
+ *    only on the FIRST authorization of a client unless `prompt=consent` forces a new consent
+ *    screen — without it a re-connect after disconnect silently comes back refresh-less.
+ *    `prompt` is an OIDC parameter with its own meaning elsewhere, so it stays Google-only.
+ */
+export function refreshTokenRequestParams(issuer: string): Record<string, string> {
+  let host: string
+  try {
+    host = new URL(issuer).host
+  } catch {
+    return { access_type: 'offline' }
+  }
+  return host === 'accounts.google.com' ? { access_type: 'offline', prompt: 'consent' } : { access_type: 'offline' }
 }
 
 /**
