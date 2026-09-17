@@ -14944,7 +14944,15 @@ export class Daemon {
       return
     }
     // Duck-typed like showActivity, so a connection fake without the optional facet is fine.
-    const react = (replyConn as Partial<SlackConnection> | undefined)?.react
+    const conn = replyConn as Partial<SlackConnection> | undefined
+    // Slack carries its own turn-start state: the agent-session lifecycle (`setStatus`) renders
+    // "is working…" with the Stop control and withdraws itself when the turn ends. A reaction on
+    // top of it doubles the signal and, unlike the indicator, never leaves — it stays on the
+    // message after the turn, in workspaces where the glyph already means something else. So a
+    // Slack connection with the lifecycle facet places no reaction. Telegram/Discord keep theirs:
+    // their typing action expires on its own and acknowledges nothing.
+    if (plan.platform === 'slack' && typeof conn?.setStatus === 'function') return
+    const react = conn?.react
     const at = nativeMessageCoordinates(msg)
     if (react && at) void react.call(replyConn, at.channel, at.messageId, 'seen').catch(() => {})
   }

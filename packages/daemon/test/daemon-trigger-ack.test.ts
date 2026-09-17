@@ -103,6 +103,16 @@ describe('turn-start acknowledgement', () => {
     }
   })
 
+  it('places no reaction on Slack, whose session lifecycle already shows the turn is running', async () => {
+    const h = await harness()
+    try {
+      await h.dispatch({ msgId: 'slack:C1:1700000000.000100', platform: 'slack', channel: 'C1' })
+      expect(h.react).not.toHaveBeenCalled()
+    } finally {
+      await h.close()
+    }
+  })
+
   it('stays silent for an origin with no inbound message to react to', async () => {
     const h = await harness()
     try {
