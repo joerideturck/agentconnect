@@ -192,15 +192,29 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
     )
   }
 
-  // Bare channel post: publish a visible message without waking an agent or addressing a human.
+  // Bare channel post: publish a visible message without waking an agent or addressing a human,
+  // at the channel root or — with `thread` — inside a conversation that already exists (§2.4).
   const channelTarget = {
     title: 'Channel post (no recipient)',
     description:
-      'Publish one visible message at a platform channel’s ROOT without waking an agent or @-mentioning a human. ' +
-      'This opens a NEW conversation of your own on that post — it never continues an existing thread.',
+      'Publish one visible message without waking an agent or @-mentioning a human. Without `thread` it lands at ' +
+      'the channel’s ROOT and opens a NEW conversation of your own there. With `thread` it lands INSIDE that ' +
+      'existing conversation — the update form, for a thread you are not the one answering.',
     ...obj(
       {
         channel,
+        thread: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'Post INSIDE this existing thread instead of at the channel root — the root message’s id (Slack ' +
+            '`thread_ts`), as `getChannelHistory` reports it in `threadTs` and `getThreadHistory` reads it. Use ' +
+            'it to put an update where the discussion already is: the same request crossposted to three channels ' +
+            'gets its status update in each of those threads, not at three channel roots. NOT for the thread you ' +
+            'are answering right now — your ordinary reply already goes there, and this refuses it. The thread ' +
+            'must already exist; a reply’s id, a channel with no thread support, and your own thread are all ' +
+            'refused rather than posted at the root.'
+        },
         platform,
         integrationId,
         attachment,
@@ -263,13 +277,20 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'posts once at the channel root and @-mentions every listed user; a single id string also works.\n' +
       '- Channel (bare post, no recipient): `{"channel":"<channel id>","message":"..."}` — posts at the channel ' +
       'root without waking anyone or @-mentioning anyone; add `platform` or `integrationId` only when needed.\n' +
+      '- Update in an EXISTING thread: `{"channel":"<channel id>","thread":"<thread root id>","message":"..."}` — ' +
+      'posts inside that conversation rather than at the root. This is how a status update reaches a discussion ' +
+      'you are not answering, such as the other channels the same request was crossposted to. Everyone already in ' +
+      'that thread hears it. Never use it for the thread you are in now — that is your ordinary reply.\n' +
+      'On Slack, `channel` may name any PUBLIC channel (the bot joins it on first use); a private channel is ' +
+      'reachable only as the conversation you were invoked in, and this refuses any other.\n' +
       '- attachment (with `toUser` or `channel`) — forward an image this conversation received: ' +
       '`{"channel":"<channel id>","attachment":"<file name>","message":"..."}`. The name is the one in the ' +
       '`[attached: …]` marker. This is the only way a RECEIVED image reaches another platform; for an image you ' +
       'produced, `shareFile` posts it into the current conversation.\n' +
       '- Parent session reply: `{"sessionId":"<Parent session>","message":"..."}` — relay an answer back to whoever ' +
       'asked this way, never by posting it at their channel root.\n' +
-      'Every visible send lands at the channel ROOT and opens a NEW conversation of your own there. Write ' +
+      'Every visible send except the `thread` update lands at the channel ROOT and opens a NEW conversation of ' +
+      'your own there. Write ' +
       '`message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone. A self ' +
       'wake is valid only in the explicit `toAgent` channel-root form above.',
     inputSchema: unionOf([agentTarget, userTarget, channelTarget, sessionTarget])
@@ -367,7 +388,8 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
     {
       name: 'listChannels',
       description:
-        'List the channels/chats the bot can post to on a platform, each with its id and name. Pass `platform` to ' +
+        'List the channels/chats the bot can post to on a platform, each with its id and name — on Slack every ' +
+        'public channel of the workspace plus the private ones the bot was invited to. Pass `platform` to ' +
         'target one of the platforms this agent is connected to (defaults to the current one), and `integrationId` ' +
         'to choose a specific bot when the agent has several on that platform. Note: Telegram bots cannot enumerate ' +
         'their chats live, so there Telegram returns the chats this agent has already been active in (from history); ' +
@@ -384,11 +406,15 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
           {
             name: 'getChannelHistory',
             description:
-              'Read one bounded page of messages from the channel bound to this conversation. This tool is ' +
-              'intentionally limited to the current context channel and accepts no channel, platform, or ' +
-              'integration selector. Results are newest-first; pass nextCursor as cursor to continue with older ' +
-              'messages. This returns channel messages, not replies inside a thread.',
+              'Read one bounded page of messages from a channel on this platform: the channel bound to this ' +
+              'conversation by default, or the one `channel` names. On Slack any PUBLIC channel can be read — the ' +
+              'bot joins it on first use — while a private channel or DM is readable only as the conversation you ' +
+              'were invoked in. Results are newest-first; pass nextCursor as cursor to continue with older ' +
+              'messages. This returns channel messages, not replies inside a thread: each carries `threadTs` and ' +
+              '`replyCount`, and `getThreadHistory` opens one.',
             inputSchema: obj({
+              integrationId: sameBotSelector,
+              channel: targetChannel,
               cursor: { type: 'string', description: 'Cursor returned by the previous page.' },
               limit: {
                 type: 'integer',
@@ -483,8 +509,10 @@ function buildThreadHistoryTool(offered: boolean, integrationId: SchemaProp): To
       description:
         'Read one thread in full — its root message and every reply. Use it to catch up on a discussion you are not ' +
         'part of: `getChannelHistory` reports each message’s `threadTs` and `replyCount`, and this opens one of ' +
-        'them. `thread` is the root message’s id (Slack thread_ts). Results are oldest-first; `truncated` is true ' +
-        'when the thread is longer than `limit`. Your own status chrome is filtered out.',
+        'them. `thread` is the root message’s id (Slack thread_ts). Any PUBLIC channel is readable (the bot joins ' +
+        'it on first use); a private channel or DM only as the conversation you were invoked in. Results are ' +
+        'oldest-first; `truncated` is true when the thread is longer than `limit`. Your own status chrome is ' +
+        'filtered out.',
       inputSchema: obj(
         {
           integrationId,
@@ -692,8 +720,8 @@ function buildSearchTool(enabled: boolean): ToolDescriptor[] {
         'its channel, author, text, timestamp and permalink. ' +
         'The name is the first limit: private channels and DMs are never searched, INCLUDING the conversation you ' +
         'are in right now, so this cannot look through the discussion you are having. Two more follow from it. ' +
-        'Hits may sit in channels you were never added to — `getThreadHistory` opens one only where you are a ' +
-        'member, so expect it to refuse on some and answer from the hit’s own text and permalink instead. And the ' +
+        'Hits may sit in channels you were never added to — they are public, so `getThreadHistory` opens any of ' +
+        'them (the bot joins the channel on first use). And the ' +
         'search is authorized by the message that started this turn, so a scheduled run, a turn another agent ' +
         'woke, or a channel message that did not address you cannot search, and will say so. Page with `cursor`. ' +
         'Slack does not permit these results to be stored or copied, so AgentConnect keeps none of them in ' +
