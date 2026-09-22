@@ -75,10 +75,9 @@ role or capability. The principal and resource shapes do not need to change.
 
 ## 4. Role and visibility
 
-**Qai fork.** Upstream treats organization ownership as an administrative role,
-not a resource-discovery capability ("role never widens visibility"). This fork
-adds an owner exception for shareable resources: an owner governs the whole
-organization and sees every resource in it.
+Organization ownership is an administrative role that governs the whole
+organization, so an owner sees every shareable resource in it (the owner
+exception). No other role widens visibility.
 
 For shareable resources:
 

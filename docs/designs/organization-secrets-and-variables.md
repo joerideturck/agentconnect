@@ -180,8 +180,8 @@ with role `owner` and the `organization.manage` action.
 | Edit an agent-local variable or secret                     | existing `resource.edit`; organization rows remain immutable |
 
 Both the `all` enrollment query and selected-agent picker use the normal
-`resource.edit` policy. Under this fork's owner exception
-(resource-visibility.md §1) that policy admits an owner to every agent, so an
+`resource.edit` policy. Under the owner exception (resource-visibility.md §1)
+that policy admits an owner to every agent, so an
 owner's `all` enrollment binds every agent of the organization, restricted ones
 included; a collaborator's still binds only what they can see. Point assignment requests
 for an invisible, non-editable, or foreign agent return the existing
