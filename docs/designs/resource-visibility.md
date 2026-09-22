@@ -72,7 +72,8 @@ The unit-test truth table follows directly:
 
 A collaborator or organization owner for whom `canView` is true may change
 `visibility` and `sharedWith`. Viewers remain read-only. Creation attribution
-and the organization Owner role never create a hidden visibility arm.
+never creates a hidden visibility arm; the organization Owner role does (the
+owner exception above), which is the one place this fork departs from upstream.
 
 This has two consequences:
 
@@ -80,8 +81,8 @@ This has two consequences:
    can share onward or switch the resource to Everyone. Use viewers when the
    selected members should remain read-only.
 2. **Any collaborator can change an Everyone resource to Selected** and choose
-   a non-empty audience. The creator and organization owners retain no implicit
-   access if omitted.
+   a non-empty audience. The creator retains no implicit access if omitted;
+   organization owners keep access through the owner exception.
 
 Both are accepted under a model of collaborator trust within an organization.
 
@@ -663,8 +664,8 @@ edits; a shared viewer only views; and `visibilityWhere(owner)` equals
    architecture supports a separate surface.
 2. **Add GIN indexes immediately** for `sharedWith` on all three tables.
 3. **Use `canManageSharing = canEdit`.** An Owner or collaborator who can view
-   and edit a resource can change sharing; only a viewer is read-only. Role
-   never widens resource visibility.
+   and edit a resource can change sharing; only a viewer is read-only. Only the
+   owner role widens resource visibility (owner exception).
 4. **Preserve `sharedWith` when changing `restricted -> org`** so switching
    back restores the selection. The `org` predicate already ignores shares.
 5. **Creation attribution is audit-only.** `createdByUserId` remains immutable
