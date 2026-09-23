@@ -298,6 +298,10 @@ export const ConfigSchema = z.object({
       // in-flight turns rather than cutting them, then releases every held group with an
       // acknowledged `duty/release` inside this bound. terminationGracePeriodSeconds must exceed it.
       poolShutdownDrainMs: z.number().int().default(300_000),
+      // A config change that needs a new runtime process lets the turns running on the old one
+      // finish for up to this long, holding new turns for it, before it cuts them for replay.
+      // No service manager is waiting on this, so it is the pool window on every daemon.
+      configRespawnDrainMs: z.number().int().default(300_000),
       // §7.3 force-cancel backstop: after `!stop` we send session/cancel and wait
       // this long; if the turn still hasn't yielded, we force-stop the host.
       cancelBackstopMs: z.number().int().default(30_000),
@@ -333,6 +337,7 @@ export const ConfigSchema = z.object({
       configFilesIdleMs: 60_000,
       shutdownDrainMs: 25_000,
       poolShutdownDrainMs: 300_000,
+      configRespawnDrainMs: 300_000,
       cancelBackstopMs: 30_000,
       turnStallTimeoutMs: 1_800_000,
       agentStartAttempts: 3,
