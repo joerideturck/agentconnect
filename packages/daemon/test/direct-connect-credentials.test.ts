@@ -96,6 +96,7 @@ describe('provider credentials in the direct-connect stage', () => {
       'materialize',
       'read',
       'skills',
+      'skills-batch',
       'skills-receipts',
       'skills-wide',
       'tunnel'

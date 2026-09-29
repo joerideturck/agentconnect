@@ -90,7 +90,7 @@ export function fakeVm(
         return tunnels.handle(payload)
       },
       workspaceRoot: '/workspace',
-      features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'],
+      features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'cluster-skills-v4'],
       backoff: new Backoff({ baseMs: 5, jitter: () => 0 }),
       log: silent
     })

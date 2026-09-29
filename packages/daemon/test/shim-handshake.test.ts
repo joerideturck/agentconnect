@@ -216,7 +216,7 @@ describe('shim feature negotiation', () => {
         clock,
         dialer.connect(
           SCRIPTED_ENDPOINT,
-          record({ grants: ['skills', 'skills-wide', 'skills-receipts'] as never }),
+          record({ grants: ['skills', 'skills-wide', 'skills-receipts', 'skills-batch'] as never }),
           500
         )
       )
@@ -229,6 +229,11 @@ describe('shim feature negotiation', () => {
       'skills-wide',
       'skills-receipts'
     ])
+    // Batched uploads ride `cluster-skills-v4` alone; an image without it keeps one `upload` per file.
+    expect(
+      await grantsFor(['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'cluster-skills-v4'])
+    ).toEqual(['skills', 'skills-wide', 'skills-receipts', 'skills-batch'])
+    expect(await grantsFor(['cluster-skills-v4'])).toEqual([])
   })
 })
 
@@ -328,7 +333,7 @@ describe('shim handshake', () => {
       type: 'shim/hello',
       agentId: 'agent-a',
       generation: 3,
-      supportedFeatures: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3']
+      supportedFeatures: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'cluster-skills-v4']
     })
     // The audience is what makes handing over the pod's own token safe: a token minted
     // for anything else must not authenticate here.

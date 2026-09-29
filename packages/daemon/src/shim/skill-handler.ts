@@ -27,6 +27,8 @@ import {
   type ClusterSkillReconcile,
   type ClusterSkillReconcileReply,
   type ClusterSkillUpload,
+  type ClusterSkillUploadBatch,
+  type ClusterSkillUploadBatchReply,
   type ClusterSkillUploadReply,
   type ClusterSkillVerifyReply,
   type ClusterSkillPrior,
@@ -85,6 +87,7 @@ export class ClusterSkillHandler {
     | ClusterSkillBeginReply
     | ClusterSkillManifestReply
     | ClusterSkillUploadReply
+    | ClusterSkillUploadBatchReply
     | ClusterSkillReconcileReply
     | ClusterSkillVerifyReply
     | ClusterSkillPriorReply
@@ -92,12 +95,13 @@ export class ClusterSkillHandler {
   > {
     const parsed = ClusterSkillRequestSchema.parse(payload)
     if (abort?.aborted) {
-      if (parsed.op === 'upload') await this.discard(parsed.handle)
+      if (parsed.op === 'upload' || parsed.op === 'upload-batch') await this.discard(parsed.handle)
       throw new Error('cluster skill operation aborted')
     }
     if (parsed.op === 'begin') return await this.begin(parsed, context)
     if (parsed.op === 'manifest') return this.manifest(parsed)
     if (parsed.op === 'upload') return await this.upload(parsed, abort)
+    if (parsed.op === 'upload-batch') return await this.uploadBatch(parsed, abort)
     if (parsed.op === 'prior') return this.prior(parsed, context)
     if (parsed.op === 'receipt') return this.receipt(parsed, context)
     if (parsed.op === 'verify') {
@@ -474,6 +478,32 @@ export class ClusterSkillHandler {
       }
       throw error
     }
+  }
+
+  /** Each entry is one whole file, so it is exactly a final `upload` at offset 0 — the same
+   *  declaration, size, digest and path checks, and the same replay answer for a file already complete. */
+  private async uploadBatch(
+    input: ClusterSkillUploadBatch,
+    abort?: AbortSignal
+  ): Promise<ClusterSkillUploadBatchReply> {
+    let completed = 0
+    for (const file of input.files) {
+      const reply = await this.upload(
+        {
+          op: 'upload',
+          operationId: input.operationId,
+          handle: input.handle,
+          sourceId: file.sourceId,
+          path: file.path,
+          offset: 0,
+          data: file.data,
+          final: true
+        },
+        abort
+      )
+      if (reply.complete) completed++
+    }
+    return { completed }
   }
 
   private async ensureSafeParents(destination: string, operationRoot: string): Promise<void> {

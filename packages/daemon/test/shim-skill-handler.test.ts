@@ -803,3 +803,174 @@ describe('cluster skill shim staging', () => {
     await expect(handler.handle({ op: 'verify', roots: [receipt] })).resolves.toEqual({ intact: [false] })
   })
 })
+
+describe('cluster skill batched uploads (cluster-skills-v4)', () => {
+  const authority = {
+    groupId: 'g',
+    term: '1',
+    daemonId: 'd',
+    agentId: 'a',
+    workspaceIncarnation: 'w',
+    shimGeneration: 1
+  }
+
+  /** A real handler behind a client, counting what reaches the shim by op. */
+  async function batchFixture(batchUploads: boolean) {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skill-batch-'))
+    const workspace = join(root, 'workspace')
+    await mkdir(workspace)
+    const handler = new ClusterSkillHandler({
+      stagingRoot: join(root, 'staging'),
+      workspaceRoot: workspace,
+      stateRoot: join(root, 'state')
+    })
+    const ops: string[] = []
+    const client = new ClusterSkillClient(
+      {
+        request: (_capability, payload) => {
+          ops.push((payload as { op: string }).op)
+          return handler.handle(payload)
+        }
+      },
+      true,
+      true,
+      true,
+      batchUploads
+    )
+    return { root, workspace, handler, client, ops }
+  }
+
+  const skillBodies = (count: number): Map<string, Buffer> =>
+    new Map(
+      Array.from({ length: count }, (_, index) => [
+        `skill-${index}/SKILL.md`,
+        Buffer.from(`---\nname: skill-${index}\ndescription: fixture\n---\n# Fixture ${index}\n`)
+      ])
+    )
+
+  const declare = (bodies: Map<string, Buffer>) =>
+    [...bodies].map(([path, body]) => ({ sourceId: 'source', path, size: body.length, sha256: sha256(body) }))
+
+  it('uploads many small files in one frame and publishes the same skills as per-file uploads', async () => {
+    const bodies = skillBodies(40)
+    const installed: string[][] = []
+    const opCounts: Record<string, number>[] = []
+    for (const batchUploads of [true, false]) {
+      const { root, workspace, client, ops } = await batchFixture(batchUploads)
+      try {
+        const operationId = randomUUID()
+        const files = declare(bodies)
+        const { handle } = await client.begin({ operationId, authority, skillsAgentId: 'codex', files })
+        await client.uploadFiles(operationId, handle, files, async (file) => bodies.get(file.path)!)
+        const reply = await client.reconcile({
+          operationId,
+          handle,
+          authority,
+          priorRoots: [],
+          replayKey: 'a'.repeat(64),
+          allowDesiredAdoption: false,
+          sources: [{ sourceId: 'source', sourceKind: 'managed', selections: [] }]
+        })
+        installed.push(reply.roots.map((root) => root.path).sort())
+        opCounts.push(ops.reduce<Record<string, number>>((acc, op) => ({ ...acc, [op]: (acc[op] ?? 0) + 1 }), {}))
+        expect((await readdir(workspace)).length).toBeGreaterThan(0)
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+    expect(installed[0]).toHaveLength(40)
+    expect(installed[0]).toEqual(installed[1])
+    // 40 files: one batch where the per-file path takes 40 round trips.
+    expect(opCounts[0]).toMatchObject({ 'upload-batch': 1 })
+    expect(opCounts[0]!.upload).toBeUndefined()
+    expect(opCounts[1]).toMatchObject({ upload: 40 })
+    expect(opCounts[1]!['upload-batch']).toBeUndefined()
+  })
+
+  it('splits batches at one chunk of bytes and streams a file larger than a chunk on its own', async () => {
+    const { root, client, ops } = await batchFixture(true)
+    try {
+      const bodies = new Map<string, Buffer>([
+        ['big/asset.bin', Buffer.alloc(MAX_CLUSTER_SKILL_CHUNK_BYTES + 10, 7)],
+        ['a/one.bin', Buffer.alloc(MAX_CLUSTER_SKILL_CHUNK_BYTES / 2 + 1, 1)],
+        ['a/two.bin', Buffer.alloc(MAX_CLUSTER_SKILL_CHUNK_BYTES / 2 + 1, 2)],
+        ['a/SKILL.md', Buffer.from('small')]
+      ])
+      const operationId = randomUUID()
+      const files = declare(bodies)
+      const { handle } = await client.begin({ operationId, authority, skillsAgentId: 'codex', files })
+      await client.uploadFiles(operationId, handle, files, async (file) => bodies.get(file.path)!)
+      // The big file: two chunked uploads. The two halves cannot share a batch.
+      expect(ops.filter((op) => op === 'upload')).toHaveLength(2)
+      expect(ops.filter((op) => op === 'upload-batch')).toHaveLength(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps every per-file check: a wrong digest discards the operation, an undeclared file is refused', async () => {
+    const { root, handler, client } = await batchFixture(true)
+    try {
+      const bodies = skillBodies(2)
+      const operationId = randomUUID()
+      const files = declare(bodies)
+      const { handle } = await client.begin({ operationId, authority, skillsAgentId: 'codex', files })
+      await expect(
+        handler.handle({
+          op: 'upload-batch',
+          operationId,
+          handle,
+          files: [{ sourceId: 'source', path: 'nope/SKILL.md', data: Buffer.from('x').toString('base64') }]
+        })
+      ).rejects.toThrow(/upload file was not declared/)
+      const [first, second] = [...bodies.keys()]
+      await expect(
+        handler.handle({
+          op: 'upload-batch',
+          operationId,
+          handle,
+          files: [
+            { sourceId: 'source', path: first!, data: bodies.get(first!)!.toString('base64') },
+            // Same length, different bytes: the size check passes, the digest check must not.
+            {
+              sourceId: 'source',
+              path: second!,
+              data: Buffer.alloc(bodies.get(second!)!.length, 0x41).toString('base64')
+            }
+          ]
+        })
+      ).rejects.toThrow(/upload digest does not match declaration/)
+      // The failed digest discarded the whole operation, as a per-file upload does.
+      await expect(
+        handler.handle({
+          op: 'upload-batch',
+          operationId,
+          handle,
+          files: [{ sourceId: 'source', path: first!, data: bodies.get(first!)!.toString('base64') }]
+        })
+      ).rejects.toThrow(/unknown cluster skill staging handle/)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('answers a replayed batch whose files are already complete, as a replayed upload does', async () => {
+    const { root, handler, client } = await batchFixture(true)
+    try {
+      const bodies = skillBodies(3)
+      const operationId = randomUUID()
+      const files = declare(bodies)
+      const { handle } = await client.begin({ operationId, authority, skillsAgentId: 'codex', files })
+      const batch = {
+        op: 'upload-batch' as const,
+        operationId,
+        handle,
+        files: [...bodies].map(([path, body]) => ({ sourceId: 'source', path, data: body.toString('base64') }))
+      }
+      await expect(handler.handle(batch)).resolves.toEqual({ completed: 3 })
+      await expect(handler.handle(batch)).resolves.toEqual({ completed: 3 })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

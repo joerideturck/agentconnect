@@ -4,8 +4,10 @@ import {
   ClusterSkillManifestSchema,
   ClusterSkillReconcileReplySchema,
   ClusterSkillReconcileSchema,
+  ClusterSkillUploadBatchSchema,
   ClusterSkillUploadSchema,
   LEGACY_MAX_CLUSTER_SKILL_FILES,
+  MAX_CLUSTER_SKILL_CHUNK_BYTES,
   MAX_CLUSTER_SKILL_CONTROL_BYTES,
   MAX_CLUSTER_SKILL_FILE_BYTES,
   MAX_CLUSTER_SKILL_FILES,
@@ -93,6 +95,54 @@ describe('cluster skill protocol', () => {
         final: true
       }).success
     ).toBe(false)
+  })
+
+  it('bounds an upload batch by file count, total bytes and frame size, and refuses duplicates', () => {
+    const handle = 'opaque-handle-1234'
+    const entry = (path: string, bytes: number) => ({
+      sourceId: 'agent:one',
+      path,
+      data: Buffer.alloc(bytes, 1).toString('base64')
+    })
+    expect(
+      ClusterSkillUploadBatchSchema.parse({ op: 'upload-batch', operationId, handle, files: [entry('a/SKILL.md', 3)] })
+        .files
+    ).toHaveLength(1)
+    expect(() => ClusterSkillUploadBatchSchema.parse({ op: 'upload-batch', operationId, handle, files: [] })).toThrow()
+    expect(() =>
+      ClusterSkillUploadBatchSchema.parse({
+        op: 'upload-batch',
+        operationId,
+        handle,
+        files: [entry('a/SKILL.md', 3), entry('a/SKILL.md', 3)]
+      })
+    ).toThrow(/duplicate upload batch file/)
+    // Two files that each fit a chunk but together exceed it: the batch is one chunk's worth, no more.
+    const half = MAX_CLUSTER_SKILL_CHUNK_BYTES / 2 + 1
+    expect(() =>
+      ClusterSkillUploadBatchSchema.parse({
+        op: 'upload-batch',
+        operationId,
+        handle,
+        files: [entry('a/one.bin', half), entry('a/two.bin', half)]
+      })
+    ).toThrow(/upload batch exceeds its byte limit/)
+    expect(() =>
+      ClusterSkillUploadBatchSchema.parse({
+        op: 'upload-batch',
+        operationId,
+        handle,
+        files: Array.from({ length: MAX_CLUSTER_SKILL_MANIFEST_PAGE + 1 }, (_, index) => entry(`s/${index}.md`, 0))
+      })
+    ).toThrow()
+    expect(() =>
+      ClusterSkillUploadBatchSchema.parse({
+        op: 'upload-batch',
+        operationId,
+        handle,
+        files: [{ sourceId: 'agent:one', path: 'a/SKILL.md', data: 'not base64!' }]
+      })
+    ).toThrow(/invalid base64 file/)
   })
 
   it('requires all reconciliation fences and rejects inconsistent receipts', () => {

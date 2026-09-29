@@ -109,6 +109,48 @@ export const ClusterSkillUploadSchema = z
   })
   .strict()
 
+/** Whole small files in one frame (`cluster-skills-v4`), so a collection of many tiny files costs a
+ *  round trip per batch rather than per file. Each entry is exactly a final `upload` at offset 0 and
+ *  is admitted by the same declaration, size and digest checks; a larger file still streams in chunks. */
+export const ClusterSkillUploadBatchSchema = z
+  .object({
+    op: z.literal('upload-batch'),
+    operationId: z.string().uuid(),
+    handle: z.string().min(16).max(128),
+    files: z
+      .array(
+        z
+          .object({
+            sourceId: z.string().min(1).max(160),
+            path: RelativeSkillPathSchema,
+            data: z
+              .string()
+              .max(Math.ceil(MAX_CLUSTER_SKILL_CHUNK_BYTES / 3) * 4)
+              .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/, 'invalid base64 file')
+          })
+          .strict()
+      )
+      .min(1)
+      .max(MAX_CLUSTER_SKILL_MANIFEST_PAGE)
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const seen = new Set<string>()
+    let bytes = 0
+    for (const file of value.files) {
+      const identity = `${file.sourceId}\0${file.path}`
+      if (seen.has(identity)) ctx.addIssue({ code: 'custom', message: 'duplicate upload batch file' })
+      seen.add(identity)
+      bytes += Buffer.from(file.data, 'base64').byteLength
+    }
+    if (bytes > MAX_CLUSTER_SKILL_CHUNK_BYTES) {
+      ctx.addIssue({ code: 'custom', message: 'upload batch exceeds its byte limit' })
+    }
+    if (Buffer.byteLength(JSON.stringify(value)) > MAX_CLUSTER_SKILL_CONTROL_BYTES) {
+      ctx.addIssue({ code: 'custom', message: 'upload batch exceeds frame-safe limit' })
+    }
+  })
+
 export const ClusterSkillSourceSchema = z
   .object({
     sourceId: z.string().min(1).max(160),
@@ -175,6 +217,7 @@ export const ClusterSkillRequestSchema = z.discriminatedUnion('op', [
   ClusterSkillBeginSchema,
   ClusterSkillManifestSchema,
   ClusterSkillUploadSchema,
+  ClusterSkillUploadBatchSchema,
   ClusterSkillReconcileSchema,
   ClusterSkillVerifySchema,
   ClusterSkillPriorSchema,
@@ -191,6 +234,9 @@ export const ClusterSkillManifestReplySchema = z
   .strict()
 export const ClusterSkillUploadReplySchema = z
   .object({ received: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_FILE_BYTES), complete: z.boolean() })
+  .strict()
+export const ClusterSkillUploadBatchReplySchema = z
+  .object({ completed: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_MANIFEST_PAGE) })
   .strict()
 /** A source whose CLI stage failed inside the shim — an oversized asset, too many files, a CLI
  *  crash. Its prior roots were preserved untouched and nothing new was published for it; the daemon
@@ -282,6 +328,8 @@ export type ClusterSkillVerify = z.infer<typeof ClusterSkillVerifySchema>
 export type ClusterSkillRequest = z.infer<typeof ClusterSkillRequestSchema>
 export type ClusterSkillBeginReply = z.infer<typeof ClusterSkillBeginReplySchema>
 export type ClusterSkillUploadReply = z.infer<typeof ClusterSkillUploadReplySchema>
+export type ClusterSkillUploadBatch = z.infer<typeof ClusterSkillUploadBatchSchema>
+export type ClusterSkillUploadBatchReply = z.infer<typeof ClusterSkillUploadBatchReplySchema>
 export type ClusterSkillReconcileReply = z.infer<typeof ClusterSkillReconcileResultSchema>
 export type ClusterSkillSkippedSource = z.infer<typeof ClusterSkillSkippedSourceSchema>
 export type ClusterSkillPrior = z.infer<typeof ClusterSkillPriorSchema>

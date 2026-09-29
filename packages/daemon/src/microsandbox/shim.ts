@@ -85,7 +85,8 @@ export async function microsandboxSkillTarget(session: Pick<ShimSession, 'reques
       { request: (capability, request, options) => session.request(capability, { cwd, request }, options) },
       session.hasCapability('skills-wide'),
       true,
-      session.hasCapability('skills-receipts')
+      session.hasCapability('skills-receipts'),
+      session.hasCapability('skills-batch')
     )
   }
 }

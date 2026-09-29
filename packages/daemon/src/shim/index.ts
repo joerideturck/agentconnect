@@ -96,7 +96,7 @@ async function main(): Promise<number> {
           : exec(capability, payload, abort, context),
     // Reported in the hello so daemon-built pod paths are anchored on this filesystem.
     workspaceRoot,
-    features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'],
+    features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'cluster-skills-v4'],
     log
   })
   if ('socketPath' in options.listen) await server.startOnSocket(options.listen.socketPath)

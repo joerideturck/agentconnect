@@ -13,6 +13,8 @@ import {
   ClusterSkillReceiptPageSchema,
   ClusterSkillVerifySchema,
   skillControlPages,
+  ClusterSkillUploadBatchReplySchema,
+  ClusterSkillUploadBatchSchema,
   ClusterSkillUploadReplySchema,
   ClusterSkillVerifyReplySchema,
   LEGACY_MAX_CLUSTER_SKILL_FILES,
@@ -20,6 +22,7 @@ import {
   MAX_CLUSTER_SKILL_CHUNK_BYTES,
   MAX_CLUSTER_SKILL_CONTROL_BYTES,
   MAX_CLUSTER_SKILL_FILES,
+  MAX_CLUSTER_SKILL_MANIFEST_PAGE,
   MAX_CLUSTER_SKILL_TOTAL_BYTES,
   type ClusterSkillBegin,
   type ClusterSkillBeginReply,
@@ -37,7 +40,9 @@ export class ClusterSkillClient {
     private readonly wide = false,
     // Enabled when the caller supplies a matching shim bundle; retained images may predate this field.
     readonly fileModes = false,
-    private readonly receiptPaging = false
+    private readonly receiptPaging = false,
+    /** Mirrors the peer's `cluster-skills-v4` grant: whole small files ride `upload-batch`. */
+    private readonly batchUploads = false
   ) {}
 
   /** What the BOUND image admits, so a caller can drop one oversized source instead of failing a launch. */
@@ -75,6 +80,51 @@ export class ClusterSkillClient {
       ClusterSkillManifestReplySchema.parse(await this.requester.request('skills', page))
     }
     return reply
+  }
+
+  /** Upload every declared file, reading each body only when its batch is sent. With `cluster-skills-v4`
+   *  a run of small files shares one frame; a file larger than one chunk, or a shim without the
+   *  feature, gets the per-file stream. */
+  async uploadFiles(
+    operationId: string,
+    handle: string,
+    files: ClusterSkillFile[],
+    read: (file: ClusterSkillFile) => Promise<Buffer>
+  ): Promise<void> {
+    if (!this.batchUploads) {
+      for (const file of files) await this.upload(operationId, handle, file, await read(file))
+      return
+    }
+    // Room for the frame's own fields; each entry's JSON size is counted below.
+    const budget = MAX_CLUSTER_SKILL_CONTROL_BYTES - 2048
+    let batch: ClusterSkillFile[] = []
+    let batchBytes = 0
+    let batchJsonBytes = 0
+    const flush = async (): Promise<void> => {
+      if (batch.length === 0) return
+      await this.uploadBatch(operationId, handle, batch, read)
+      batch = []
+      batchBytes = 0
+      batchJsonBytes = 0
+    }
+    for (const file of files) {
+      if (file.size > MAX_CLUSTER_SKILL_CHUNK_BYTES) {
+        await this.upload(operationId, handle, file, await read(file))
+        continue
+      }
+      const jsonBytes = batchEntryJsonBytes(file)
+      if (
+        batch.length >= MAX_CLUSTER_SKILL_MANIFEST_PAGE ||
+        batchBytes + file.size > MAX_CLUSTER_SKILL_CHUNK_BYTES ||
+        batchJsonBytes + jsonBytes > budget
+      ) {
+        await flush()
+      }
+      batch.push(file)
+      batchBytes += file.size
+      batchJsonBytes += jsonBytes
+    }
+    await flush()
   }
 
   async upload(operationId: string, handle: string, file: ClusterSkillFile, content: Buffer): Promise<void> {
@@ -160,6 +210,27 @@ export class ClusterSkillClient {
     return { intact }
   }
 
+  private async uploadBatch(
+    operationId: string,
+    handle: string,
+    files: ClusterSkillFile[],
+    read: (file: ClusterSkillFile) => Promise<Buffer>
+  ): Promise<void> {
+    const entries = []
+    for (const file of files) {
+      const body = await read(file)
+      // The declared size is what the batch was packed by; a body that changed since is the shim's
+      // digest check to refuse, but it must not grow the frame past what was budgeted.
+      if (body.length !== file.size) throw new Error('cluster skill file changed size since inspection')
+      entries.push({ sourceId: file.sourceId, path: file.path, data: body.toString('base64') })
+    }
+    const request = ClusterSkillUploadBatchSchema.parse({ op: 'upload-batch', operationId, handle, files: entries })
+    const reply = ClusterSkillUploadBatchReplySchema.parse(await this.requester.request('skills', request))
+    if (reply.completed !== files.length) {
+      throw new Error('cluster skill shim returned an inconsistent upload batch receipt')
+    }
+  }
+
   private async uploadChunk(
     operationId: string,
     handle: string,
@@ -181,4 +252,13 @@ export class ClusterSkillClient {
       })
     )
   }
+}
+
+/** A batch entry's JSON size from its declaration alone: the base64 body plus the fields around it. */
+function batchEntryJsonBytes(file: ClusterSkillFile): number {
+  return (
+    Buffer.byteLength(JSON.stringify({ sourceId: file.sourceId, path: file.path, data: '' })) +
+    Math.ceil(file.size / 3) * 4 +
+    1
+  )
 }

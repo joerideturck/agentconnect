@@ -112,10 +112,9 @@ export class ClusterSkillCoordinator {
     })
     // Re-read at upload time. A body that changed since inspection fails the shim's own digest
     // check against this descriptor, so streaming costs no safety.
-    for (const file of files) {
-      const body = await readFile(join(sourceDirs.get(file.sourceId)!, ...file.path.split('/')))
-      await input.client.upload(authority.operationId, handle, file, body)
-    }
+    await input.client.uploadFiles(authority.operationId, handle, files, (file) =>
+      readFile(join(sourceDirs.get(file.sourceId)!, ...file.path.split('/')))
+    )
     if (!(await this.store.authorizeClusterSkillMutation({ ...authority, priorRevision: begun.priorRevision }))) {
       throw new Error('cluster skill reconciliation lost duty authority')
     }

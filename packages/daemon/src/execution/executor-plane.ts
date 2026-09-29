@@ -40,7 +40,8 @@ export const EXECUTOR_GRANTS: ShimCapability[] = [
   'tunnel',
   'skills',
   'skills-wide',
-  'skills-receipts'
+  'skills-receipts',
+  'skills-batch'
 ]
 
 /** A day, as a local VM's binding credential takes (#2165): a renewal proves nothing new on a pipe that is already authenticated. */
@@ -297,7 +298,8 @@ export class ExecutorPlane implements ExecutionPlane {
       session,
       session.hasCapability('skills-wide'),
       false,
-      session.hasCapability('skills-receipts')
+      session.hasCapability('skills-receipts'),
+      session.hasCapability('skills-batch')
     )
   }
 

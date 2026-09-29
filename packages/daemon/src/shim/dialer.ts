@@ -460,6 +460,7 @@ export class ShimDialer {
     const supportsSkills = identity.features?.includes('cluster-skills-v1') === true
     const supportsWideSkills = supportsSkills && identity.features?.includes('cluster-skills-v2') === true
     const supportsReceipts = supportsWideSkills && identity.features?.includes('cluster-skills-v3') === true
+    const supportsBatch = supportsSkills && identity.features?.includes('cluster-skills-v4') === true
     return {
       ...record,
       grants: record.grants.filter((grant) =>
@@ -469,7 +470,9 @@ export class ShimDialer {
             ? supportsWideSkills
             : grant === 'skills-receipts'
               ? supportsReceipts
-              : true
+              : grant === 'skills-batch'
+                ? supportsBatch
+                : true
       )
     }
   }

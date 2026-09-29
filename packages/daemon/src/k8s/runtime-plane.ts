@@ -529,7 +529,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
         session,
         session.hasCapability('skills-wide'),
         false,
-        session.hasCapability('skills-receipts')
+        session.hasCapability('skills-receipts'),
+        session.hasCapability('skills-batch')
       )
     },
     workspaceIncarnationFor: (subject) => driver.currentLaunch(subject)?.claimUid,
