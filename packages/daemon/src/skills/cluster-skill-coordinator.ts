@@ -51,6 +51,20 @@ export interface ClusterSkillJournalStore {
   authorizeClusterSkillMutation(input: ClusterSkillReconcileAuthority & { priorRevision: number }): Promise<boolean>
 }
 
+/** Wall-clock milliseconds per phase of one cluster skill reconciliation, for the caller's log line. */
+export interface ClusterSkillTimings {
+  /** Hashing every declared file into the manifest. */
+  inspectMs?: number
+  /** The three journal/ledger round trips: begin, authorize, commit. */
+  journalMs?: number
+  /** Declaring the manifest and uploading every file into the sandbox. */
+  uploadMs?: number
+  /** The shim's reconcile: staging each source through the skills CLI and publishing. */
+  shimMs?: number
+  files?: number
+  bytes?: number
+}
+
 export class ClusterSkillCoordinator {
   constructor(private readonly store: ClusterSkillJournalStore) {}
 
@@ -63,7 +77,18 @@ export class ClusterSkillCoordinator {
     client: ClusterSkillClient
     initialLedger?: ClusterSkillLedger
     isLaunchCurrent?: () => boolean
+    /** Filled with per-phase durations as the run proceeds; diagnostics only. */
+    timings?: ClusterSkillTimings
   }): Promise<ClusterSkillLedger & { skipped?: ClusterSkillSkippedSource[] }> {
+    const timings = input.timings
+    const timed = async <T>(phase: 'inspectMs' | 'journalMs' | 'uploadMs' | 'shimMs', work: () => Promise<T>) => {
+      const start = performance.now()
+      try {
+        return await work()
+      } finally {
+        if (timings) timings[phase] = (timings[phase] ?? 0) + Math.round(performance.now() - start)
+      }
+    }
     if (input.isLaunchCurrent && !input.isLaunchCurrent()) {
       throw new Error('cluster skill reconciliation targets a stale sandbox launch')
     }
@@ -77,7 +102,9 @@ export class ClusterSkillCoordinator {
     const files: ClusterSkillFile[] = []
     const sourceDirs = new Map(sources.map((source) => [source.sourceId, source.sourceDir]))
     for (const source of sources) {
-      const inspected = await inspectLocalSkillSource(source.sourceDir, { limits: source.limits })
+      const inspected = await timed('inspectMs', () =>
+        inspectLocalSkillSource(source.sourceDir, { limits: source.limits })
+      )
       for (const file of inspected.files) {
         files.push({
           sourceId: source.sourceId,
@@ -96,44 +123,59 @@ export class ClusterSkillCoordinator {
         })
       )
       .digest('hex')
-    const begun = await this.store.beginClusterSkillReconcile({
-      ...input.authority,
-      operationId,
-      desiredHash,
-      replayKey: randomBytes(32).toString('hex')
-    })
+    if (timings) {
+      timings.files = files.length
+      timings.bytes = files.reduce((sum, file) => sum + file.size, 0)
+    }
+    const begun = await timed('journalMs', () =>
+      this.store.beginClusterSkillReconcile({
+        ...input.authority,
+        operationId,
+        desiredHash,
+        replayKey: randomBytes(32).toString('hex')
+      })
+    )
     if (!begun.ok) throw new Error('cluster skill reconciliation lost duty authority')
     const authority = { ...input.authority, operationId: begun.operationId }
-    const { handle } = await input.client.begin({
-      operationId: authority.operationId,
-      authority: { ...input.authority, shimGeneration: input.shimGeneration },
-      skillsAgentId: input.skillsAgentId,
-      files
+    const { handle } = await timed('uploadMs', async () => {
+      const begin = await input.client.begin({
+        operationId: authority.operationId,
+        authority: { ...input.authority, shimGeneration: input.shimGeneration },
+        skillsAgentId: input.skillsAgentId,
+        files
+      })
+      // Re-read at upload time. A body that changed since inspection fails the shim's own digest
+      // check against this descriptor, so streaming costs no safety.
+      for (const file of files) {
+        const body = await readFile(join(sourceDirs.get(file.sourceId)!, ...file.path.split('/')))
+        await input.client.upload(authority.operationId, begin.handle, file, body)
+      }
+      return begin
     })
-    // Re-read at upload time. A body that changed since inspection fails the shim's own digest
-    // check against this descriptor, so streaming costs no safety.
-    for (const file of files) {
-      const body = await readFile(join(sourceDirs.get(file.sourceId)!, ...file.path.split('/')))
-      await input.client.upload(authority.operationId, handle, file, body)
-    }
-    if (!(await this.store.authorizeClusterSkillMutation({ ...authority, priorRevision: begun.priorRevision }))) {
+    if (
+      !(await timed('journalMs', () =>
+        this.store.authorizeClusterSkillMutation({ ...authority, priorRevision: begun.priorRevision })
+      ))
+    ) {
       throw new Error('cluster skill reconciliation lost duty authority')
     }
     const reply = ClusterSkillReconcileResultSchema.parse(
-      await input.client.reconcile({
-        operationId: authority.operationId,
-        handle,
-        authority: { ...input.authority, shimGeneration: input.shimGeneration },
-        priorRoots:
-          begun.priorRevision === 0 ? (input.initialLedger ?? begun.priorLedger).roots : begun.priorLedger.roots,
-        replayKey: begun.replayKey,
-        allowDesiredAdoption: false,
-        sources: sources.map((source) => ({
-          sourceId: source.sourceId,
-          sourceKind: source.sourceKind,
-          selections: source.selections
-        }))
-      })
+      await timed('shimMs', () =>
+        input.client.reconcile({
+          operationId: authority.operationId,
+          handle,
+          authority: { ...input.authority, shimGeneration: input.shimGeneration },
+          priorRoots:
+            begun.priorRevision === 0 ? (input.initialLedger ?? begun.priorLedger).roots : begun.priorLedger.roots,
+          replayKey: begun.replayKey,
+          allowDesiredAdoption: false,
+          sources: sources.map((source) => ({
+            sourceId: source.sourceId,
+            sourceKind: source.sourceKind,
+            selections: source.selections
+          }))
+        })
+      )
     )
     if (reply.conflicts.length > 0) throw new Error('cluster skill ownership conflict')
     if (input.isLaunchCurrent && !input.isLaunchCurrent()) {
@@ -188,11 +230,13 @@ export class ClusterSkillCoordinator {
       (resolution) => !skippedGitPrefixes.includes(resolution.definitionDigest)
     )
     const ledger = { roots: reply.roots, gitResolutions }
-    const committed = await this.store.commitClusterSkillReconcile({
-      ...authority,
-      priorRevision: begun.priorRevision,
-      ledger
-    })
+    const committed = await timed('journalMs', () =>
+      this.store.commitClusterSkillReconcile({
+        ...authority,
+        priorRevision: begun.priorRevision,
+        ledger
+      })
+    )
     if (!committed.ok) throw new Error('cluster skill reconciliation lost duty authority')
     if (input.isLaunchCurrent && !input.isLaunchCurrent()) {
       throw new Error('cluster skill reconciliation targets a stale sandbox launch')

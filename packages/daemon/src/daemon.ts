@@ -405,6 +405,7 @@ import {
 import { GitSkillRefTracker } from './skills/git-skill-ref-tracker.js'
 import {
   ClusterSkillCoordinator,
+  type ClusterSkillTimings,
   clusterSkillSupportRequired,
   type ClusterSkillSnapshotSource
 } from './skills/cluster-skill-coordinator.js'
@@ -6197,6 +6198,12 @@ export class Daemon {
       throw new Error('cluster skill preparation authority is unavailable')
     }
     const scratch = await mkdtemp(join(tmpdir(), 'agentconnect-cluster-skills-'))
+    // Diagnostics for the one line logged per install: where a session's skill preparation spends its time.
+    const preparationStart = performance.now()
+    let acquireMs = 0
+    let selectMs = 0
+    let cachedSources = 0
+    const timings: ClusterSkillTimings = {}
     try {
       // ONE budget for the whole manifest, spent in source order. Per-source allowances would each
       // pass and only their sum be refused — inside `begin`, past every warn-and-skip boundary.
@@ -6245,17 +6252,21 @@ export class Daemon {
             agentId: agent.id,
             useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
           }
+          const acquireStart = performance.now()
           const acquired = this.gitSkillSources
             ? await this.gitSkillSources.resolve(currentEntry, plannedCommit, acquireOptions)
             : await acquireGitSkillSource(plannedCommit ? { ...currentEntry, ref: plannedCommit } : currentEntry, {
                 ...acquireOptions,
                 destination: join(scratch, `git-${index}`)
               })
+          acquireMs += performance.now() - acquireStart
+          if ('cached' in acquired && acquired.cached) cachedSources++
           const resolvedCommit = acquired.resolvedCommit.toLowerCase()
           if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
             throw new Error(`Git source "${currentEntry.name}" did not resolve to its planned commit`)
           }
           resolutionsByDefinition.set(definitionDigest, resolvedCommit)
+          const selectStart = performance.now()
           const inspected = await inspectLocalSkillSource(acquired.sourceDir, {
             limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
           })
@@ -6265,6 +6276,7 @@ export class Daemon {
             inspected.files,
             currentEntry.skills
           )
+          selectMs += performance.now() - selectStart
           // Charged last, so a source this `try` goes on to reject never spends budget later ones need.
           admit(inspected.fileCount, inspected.totalBytes)
           gitSources.push({
@@ -6327,8 +6339,17 @@ export class Daemon {
         gitResolutions,
         client,
         initialLedger: peer.initialLedger,
-        isLaunchCurrent: peer.isLaunchCurrent
+        isLaunchCurrent: peer.isLaunchCurrent,
+        timings
       })
+      const ms = (value: number | undefined): number => Math.round(value ?? 0)
+      this.log.info(
+        `skills: installed for ${agent.id} (workspace ${workspaceIncarnation.slice(0, 8)}) in ${ms(performance.now() - preparationStart)}ms — ` +
+          `acquire ${ms(acquireMs)}ms (${cachedSources}/${configuredGitSources.length} Git sources cached), ` +
+          `select ${ms(selectMs)}ms, hash ${ms(timings.inspectMs)}ms, journal ${ms(timings.journalMs)}ms, ` +
+          `upload ${ms(timings.uploadMs)}ms (${timings.files ?? 0} files, ${Math.round((timings.bytes ?? 0) / 1024)} KiB), ` +
+          `shim ${ms(timings.shimMs)}ms`
+      )
       // Named per source so the operator can fix the repository; the session goes on without it.
       const sourceNames = new Map(
         configuredGitSources.map(({ index, entry }) => [`agent:${index}:`, entry.name] as const)

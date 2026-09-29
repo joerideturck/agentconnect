@@ -120,7 +120,8 @@ export function createExecHandler(
   const skillHandler = new ClusterSkillHandler({
     stagingRoot: paths.skillStagingDir,
     workspaceRoot: deps.workspaceRoot,
-    stateRoot: join(deps.workspaceRoot, '.agentconnect', 'cluster-skill-state')
+    stateRoot: join(deps.workspaceRoot, '.agentconnect', 'cluster-skill-state'),
+    ...(deps.log ? { log: deps.log } : {})
   })
   const workspaceSkills = new Map<string, ClusterSkillHandler>()
   return async (capability, payload, abort, context) => {
@@ -144,7 +145,8 @@ export function createExecHandler(
         handler = new ClusterSkillHandler({
           stagingRoot: join(paths.skillStagingDir, createHash('sha256').update(cwd).digest('hex')),
           workspaceRoot: cwd,
-          stateRoot: join(cwd, '.agentconnect', 'cluster-skill-state')
+          stateRoot: join(cwd, '.agentconnect', 'cluster-skill-state'),
+          ...(deps.log ? { log: deps.log } : {})
         })
         workspaceSkills.set(cwd, handler)
       }

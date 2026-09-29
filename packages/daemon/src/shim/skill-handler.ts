@@ -61,6 +61,8 @@ export interface ClusterSkillHandlerDeps {
   stateRoot?: string
   inactiveMs?: number
   now?: () => number
+  /** Where the per-install timing line goes; diagnostics only. */
+  log?: { info: (message: string) => void }
 }
 
 const sourceDirectory = (sourceId: string): string => createHash('sha256').update(sourceId).digest('hex')
@@ -307,6 +309,7 @@ export class ClusterSkillHandler {
     const cleanups: Array<() => void> = []
     // Sources whose CLI stage failed: reported, and their prior roots left exactly as they are.
     const skipped: ClusterSkillSkippedSource[] = []
+    const stageStart = performance.now()
     try {
       const replayingPublication = await hasSkillPublicationOperation(
         this.deps.workspaceRoot,
@@ -373,6 +376,8 @@ export class ClusterSkillHandler {
           offset = page.nextOffset
         } while (true)
       }
+      const stageMs = Math.round(performance.now() - stageStart)
+      const publishStart = performance.now()
       const result = await reconcileSkillBundles({
         cwd: this.deps.workspaceRoot,
         stateDir: this.deps.stateRoot,
@@ -403,6 +408,11 @@ export class ClusterSkillHandler {
         publicationKey: input.replayKey,
         candidates
       })
+      this.deps.log?.info(
+        `skills: staged ${input.sources.length} source(s) through the skills CLI in ${stageMs}ms, ` +
+          `published ${candidates.length} bundle(s) in ${Math.round(performance.now() - publishStart)}ms` +
+          (result.skipped === 'unchanged' ? ' (unchanged)' : '')
+      )
       const reply = ClusterSkillReconcileResultSchema.parse({
         roots: result.owned.map(ownedRoot),
         conflicts: result.conflicts,
