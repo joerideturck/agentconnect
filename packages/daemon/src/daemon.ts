@@ -6244,22 +6244,43 @@ export class Daemon {
           trackedCommits
         ).map((resolution) => [resolution.definitionDigest, resolution.resolvedCommit])
       )
-      for (const { index, entry: currentEntry } of configuredGitSources) {
-        try {
-          const definitionDigest = gitResolutionDigest(currentEntry)
-          const plannedCommit = trackedCommits.get(definitionDigest) ?? resolutionsByDefinition.get(definitionDigest)
-          const acquireOptions = {
-            agentId: agent.id,
-            useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
-          }
-          const acquireStart = performance.now()
-          const acquired = this.gitSkillSources
-            ? await this.gitSkillSources.resolve(currentEntry, plannedCommit, acquireOptions)
-            : await acquireGitSkillSource(plannedCommit ? { ...currentEntry, ref: plannedCommit } : currentEntry, {
+      // Every source's acquisition (a download, or a cache hit's access check) is its own network round
+      // trip, so they run at once; what follows stays in source order, which is the order the manifest
+      // budget is spent in.
+      const acquireOptions = {
+        agentId: agent.id,
+        useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
+      }
+      const acquireStart = performance.now()
+      const acquisitions = new Map(
+        configuredGitSources.map(({ index, entry: currentEntry }) => {
+          const plannedCommit =
+            trackedCommits.get(gitResolutionDigest(currentEntry)) ??
+            resolutionsByDefinition.get(gitResolutionDigest(currentEntry))
+          const acquiring = this.gitSkillSources
+            ? this.gitSkillSources.resolve(currentEntry, plannedCommit, acquireOptions)
+            : acquireGitSkillSource(plannedCommit ? { ...currentEntry, ref: plannedCommit } : currentEntry, {
                 ...acquireOptions,
                 destination: join(scratch, `git-${index}`)
               })
-          acquireMs += performance.now() - acquireStart
+          // Settled here so a failed source is reported in its turn below, never as an unhandled rejection.
+          return [
+            index,
+            acquiring.then(
+              (acquired) => ({ ok: true as const, acquired, plannedCommit }),
+              (error: unknown) => ({ ok: false as const, error })
+            )
+          ] as const
+        })
+      )
+      await Promise.all(acquisitions.values())
+      acquireMs += performance.now() - acquireStart
+      for (const { index, entry: currentEntry } of configuredGitSources) {
+        try {
+          const definitionDigest = gitResolutionDigest(currentEntry)
+          const outcome = await acquisitions.get(index)!
+          if (!outcome.ok) throw outcome.error
+          const { acquired, plannedCommit } = outcome
           if ('cached' in acquired && acquired.cached) cachedSources++
           const resolvedCommit = acquired.resolvedCommit.toLowerCase()
           if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
