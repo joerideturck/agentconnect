@@ -393,6 +393,7 @@ import {
 } from './workspace/workspace-manager.js'
 import { sessionInitiatedBy } from './workspace/session-branch.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
+import { GitSkillSourceCache } from './skills/git-skill-source-cache.js'
 import { acceptedDreamSkillSources } from './skills/dream-skills.js'
 import { acquireGitSkillSource, gitSkillRepositoryPath } from './skills/skill-git-source.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, inspectLocalSkillSource } from './skills/skill-source-snapshot.js'
@@ -1659,6 +1660,8 @@ export class Daemon {
   private cpClient?: CpClient
   private remoteWebchatGrants?: RemoteWebchatGrantManager
   private managedSkillCache?: ManagedSkillCache
+  /** Extracted Git skill sources per (agent, repository, commit), so a new session reuses what an earlier one fetched. */
+  private gitSkillSources?: GitSkillSourceCache
   private gitSkillRefs?: GitSkillRefTracker
   private relays?: RelayManager
   private cpCrons?: CpCronRegistry
@@ -3077,6 +3080,9 @@ export class Daemon {
         if (!client) throw new Error('control plane is not connected')
         return client.readManagedSkill(request)
       },
+      warn: (message) => this.log.warn(message)
+    })
+    this.gitSkillSources = new GitSkillSourceCache(join(root, 'git-skill-sources'), {
       warn: (message) => this.log.warn(message)
     })
     // A tracking Git skill ref is re-read per new session's preparation, so the
@@ -6234,18 +6240,41 @@ export class Daemon {
           trackedCommits
         ).map((resolution) => [resolution.definitionDigest, resolution.resolvedCommit])
       )
+      // Every source's acquisition (a download, or a cache hit's access check) is its own network round
+      // trip, so they run at once; what follows stays in source order, which is the order the manifest
+      // budget is spent in.
+      const acquireOptions = {
+        agentId: agent.id,
+        useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
+      }
+      const acquisitions = new Map(
+        configuredGitSources.map(({ index, entry: currentEntry }) => {
+          const plannedCommit =
+            trackedCommits.get(gitResolutionDigest(currentEntry)) ??
+            resolutionsByDefinition.get(gitResolutionDigest(currentEntry))
+          const acquiring = this.gitSkillSources
+            ? this.gitSkillSources.resolve(currentEntry, plannedCommit, acquireOptions)
+            : acquireGitSkillSource(plannedCommit ? { ...currentEntry, ref: plannedCommit } : currentEntry, {
+                ...acquireOptions,
+                destination: join(scratch, `git-${index}`)
+              })
+          // Settled here so a failed source is reported in its turn below, never as an unhandled rejection.
+          return [
+            index,
+            acquiring.then(
+              (acquired) => ({ ok: true as const, acquired, plannedCommit }),
+              (error: unknown) => ({ ok: false as const, error })
+            )
+          ] as const
+        })
+      )
+      await Promise.all(acquisitions.values())
       for (const { index, entry: currentEntry } of configuredGitSources) {
         try {
           const definitionDigest = gitResolutionDigest(currentEntry)
-          const plannedCommit = trackedCommits.get(definitionDigest) ?? resolutionsByDefinition.get(definitionDigest)
-          const acquired = await acquireGitSkillSource(
-            plannedCommit ? { ...currentEntry, ref: plannedCommit } : currentEntry,
-            {
-              destination: join(scratch, `git-${index}`),
-              agentId: agent.id,
-              useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
-            }
-          )
+          const outcome = await acquisitions.get(index)!
+          if (!outcome.ok) throw outcome.error
+          const { acquired, plannedCommit } = outcome
           const resolvedCommit = acquired.resolvedCommit.toLowerCase()
           if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
             throw new Error(`Git source "${currentEntry.name}" did not resolve to its planned commit`)
