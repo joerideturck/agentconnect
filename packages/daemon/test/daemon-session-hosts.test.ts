@@ -367,6 +367,7 @@ it.skipIf(process.platform === 'win32')(
         placementOf: (key: string) => (key === placed.sessionKey ? placed : undefined),
         homeFor: () => '/srv/executor/sessions/leaf/home',
         rootsFor: () => ({ runtimeRoot: '/srv/executor/hs/0a1b2c', missingHelpers: [] }),
+        codexStateFor: () => undefined,
         runtimeDefFor: (_key: string, runtime: unknown) => runtime,
         spawnFor: () => ({ driver: {}, hostKey }),
         stop: async () => {}
@@ -408,6 +409,7 @@ it.skipIf(process.platform === 'win32')(
         placementOf: (key: string) => (key === placedKey ? placed : undefined),
         homeFor: () => '/srv/executor/sessions/leaf/home',
         rootsFor: () => ({ runtimeRoot: '/srv/executor/hs/0a1b2c', missingHelpers: [] }),
+        codexStateFor: () => undefined,
         runtimeDefFor,
         spawnFor: () => ({ driver: {} }),
         stop: async () => {}
@@ -465,6 +467,7 @@ it.skipIf(process.platform === 'win32')(
             : undefined,
         homeFor: () => '/srv/executor/sessions/leaf/home',
         rootsFor: () => ({ runtimeRoot: '/run/agentconnect', missingHelpers: [] }),
+        codexStateFor: () => undefined,
         runtimeDefFor,
         spawnFor: () => ({ driver: {} }),
         stop: async () => {}
@@ -521,6 +524,7 @@ it.skipIf(process.platform === 'win32')(
             : undefined,
         homeFor: () => '/srv/executor/sessions/leaf/home',
         rootsFor: () => ({ runtimeRoot: '/run/agentconnect', missingHelpers: [] }),
+        codexStateFor: () => undefined,
         runtimeDefFor: (_key: string, runtime: Record<string, unknown>) => ({ ...runtime, ...installed }),
         spawnFor: () => ({ driver: {} }),
         stop: async () => {}
@@ -570,6 +574,7 @@ it.skipIf(process.platform === 'win32')(
         placementOf: (key: string) => (key === sessionKey ? placed : undefined),
         homeFor: () => '/srv/executor/sessions/leaf/home',
         rootsFor: () => ({ runtimeRoot: '/srv/executor/hs/0a1b2c', missingHelpers: [] }),
+        codexStateFor: () => undefined,
         runtimeDefFor: (_key: string, runtime: unknown) => runtime,
         spawnFor: () => ({ driver: {}, hostKey }),
         stop: async () => {}
