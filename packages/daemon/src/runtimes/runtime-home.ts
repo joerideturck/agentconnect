@@ -225,7 +225,7 @@ function copySeedFile(
 
 /** Config roots can contain gigabytes of sessions/logs. Seed only their small,
  * top-level auth/settings/config files; runtime-generated state starts private. */
-function isConfigFile(name: string): boolean {
+export function isRuntimeHomeSeedFile(name: string): boolean {
   const lower = name.toLowerCase()
   return (
     /\.(json|toml|ya?ml)$/.test(lower) ||
@@ -266,7 +266,7 @@ function seedLocation(
     return
   }
   for (const entry of readdirSync(source, { withFileTypes: true })) {
-    if (!entry.isFile() || !isConfigFile(entry.name)) continue
+    if (!entry.isFile() || !isRuntimeHomeSeedFile(entry.name)) continue
     copySeedFile(join(source, entry.name), join(destination, entry.name), excludedDestinations, seedJsonKeys)
   }
 }
