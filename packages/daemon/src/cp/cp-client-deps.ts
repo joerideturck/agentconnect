@@ -105,6 +105,8 @@ export interface CpClientRegistrationHost {
   /** The machine's effective strategy table, and the retiring `sandbox.backend` the CP migrates `runInSandbox` from (session-executors.md §5). */
   ownStrategies(): ExecutorStrategyTable
   sandboxBackend(): string
+  /** The shared session-content store this daemon writes (`LocalStore.contentStoreId`); absent for a private one. */
+  contentStoreId(): string | undefined
   /** The executor facet (session-executors.md §6); while it is dark it reports nothing, and then nothing new is sent. */
   executorFacet(): ExecutorFacet | undefined
   admittedRuntimeIds(): string[]
@@ -267,6 +269,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // The deployment side sets this from the pod-template-hash label; the ledger's rollout barrier
     // lets only the newest live generation of the set claim vacated groups. Unset locally.
     generation: process.env[POD_TEMPLATE_HASH_ENV]?.trim() || undefined,
+    contentStoreId: () => host.contentStoreId(),
     heartbeatDefaultMs: host.heartbeatDefaultMs(),
     maxAgents: host.maxAgents(),
     capabilities: () => {

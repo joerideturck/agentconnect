@@ -212,6 +212,8 @@ export interface CpClientDeps
   host: string
   /** Rollout generation (pod-template hash) — a pool member's; absent for a local daemon. */
   generation?: string
+  /** The shared session-content store this daemon writes; absent for a private one. */
+  contentStoreId?: () => string | undefined
   heartbeatDefaultMs: number
   maxAgents: number
   capabilities: () => RegisterReq['capabilities']
@@ -581,6 +583,7 @@ export class CpClient {
     const register = buildEnvelope('register', {
       host: this.deps.host,
       ...(this.deps.generation ? { generation: this.deps.generation } : {}),
+      ...(this.deps.contentStoreId?.() ? { contentStore: { id: this.deps.contentStoreId()! } } : {}),
       capabilities: registerCapabilities,
       maxAgents: this.deps.maxAgents,
       localState: this.deps.localState()
