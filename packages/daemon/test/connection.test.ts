@@ -1864,19 +1864,6 @@ describe('SlackConnection.updateBlocks', () => {
     stop: async () => {}
   })
 
-  it('re-renders a markdown block table on edit, as the first post did', async () => {
-    const calls: any[] = []
-    const conn = new SlackConnection(
-      { ...deps(), sendIntervalMs: 0 } as any,
-      () => withUpdate(async (payload) => void calls.push(payload)) as any
-    )
-    const text = '| a | b |\n|---|---|\n| 1 | 2 |'
-
-    await conn.updateBlocks('C1', '123.45', [{ type: 'markdown', text }], text)
-
-    expect(calls[0]).toMatchObject({ text, blocks: [{ type: 'markdown', text: '- **a:** 1 · **b:** 2' }] })
-  })
-
   it('can replace visible blocks without resending the original top-level text', async () => {
     const calls: any[] = []
     const conn = new SlackConnection(
@@ -2037,7 +2024,7 @@ describe('SlackConnection chat.postMessage boundary', () => {
     })
   })
 
-  it('posts a reply table as list items Slack shows, keeping the raw text as the fallback', async () => {
+  it('posts a reply table verbatim in the markdown block, which Slack renders as a table', async () => {
     const calls: any[] = []
     const conn = new SlackConnection(
       { ...deps(), sendIntervalMs: 0 } as any,
@@ -2047,10 +2034,7 @@ describe('SlackConnection chat.postMessage boundary', () => {
 
     await conn.postMessage('C1', text, '100.1')
 
-    expect(calls[0]).toMatchObject({
-      text,
-      blocks: [{ type: 'markdown', text: 'Recent commits:\n\n- **Author:** alice · **Summary:** fix `ci`\n\nDone.' }]
-    })
+    expect(calls[0]).toMatchObject({ text, blocks: [{ type: 'markdown', text }] })
   })
 
   it('posts linked trailing context with the reply and disables unfurls on the initial post', async () => {
