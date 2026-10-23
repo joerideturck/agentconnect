@@ -150,6 +150,11 @@ export interface RelayConnDeps {
   /** Provider-neutral live membership re-check (gitlab-com-integration.md §12.2).
    *  A thrown store/provider error becomes a retryable correlated error. */
   authorizeCodeHostMembership: (req: RcCodeHostMembershipAuthz) => Promise<boolean>
+  /** Structured server log sink for failures handled at the relay WS edge. */
+  log?: {
+    error: (obj: Record<string, unknown>, message: string) => void
+    warn: (obj: Record<string, unknown>, message: string) => void
+  }
 }
 
 export class RelayConnection implements RelayChannel {
@@ -165,11 +170,12 @@ export class RelayConnection implements RelayChannel {
   /** Begin: wire transport callbacks (the gate opens at AUTHENTICATING). */
   start(): void {
     this.transport.onMessage((t) => {
-      void this.onText(t).catch(() => {
+      void this.onText(t).catch((err: unknown) => {
+        this.deps.log?.error({ err, relayId: this.relayId, state: this.state }, 'relay ws: frame handling failed')
         if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
       })
     })
-    this.transport.onClose(() => this.onClose())
+    this.transport.onClose((code, reason) => this.onClose(code, reason))
   }
 
   private async onText(text: string): Promise<void> {
@@ -259,7 +265,8 @@ export class RelayConnection implements RelayChannel {
         default:
           this.sendError(frame.id, 'PROTOCOL_STATE', `unsupported: ${frame.type}`)
       }
-    } catch {
+    } catch (err) {
+      this.deps.log?.error({ err, relayId: this.relayId, type: frame.type }, 'relay ws: frame dispatch failed')
       if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
     }
   }
@@ -615,11 +622,13 @@ export class RelayConnection implements RelayChannel {
   }
 
   close(code: number, reason: string): void {
+    this.deps.log?.warn({ relayId: this.relayId, state: this.state, code, reason }, 'relay ws: closing connection')
     this.state = 'CLOSED'
     this.transport.close(code, reason)
   }
 
-  private onClose(): void {
+  private onClose(code: number, reason: string): void {
+    this.deps.log?.warn({ relayId: this.relayId, state: this.state, code, reason }, 'relay ws: connection closed')
     this.state = 'CLOSED'
     // Drop from the registry only if still ours (a late close from a superseded old
     // socket must not evict the live one). The durable `relay` row ages out of the

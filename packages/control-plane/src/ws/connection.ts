@@ -87,7 +87,8 @@ export class DaemonConnection implements ConnChannel {
     // Returned, not swallowed: a live socket discards it, and the in-memory fake awaits it so a
     // test can barrier on the whole dispatch instead of pausing and hoping.
     this.transport.onMessage((t) =>
-      this.onText(t).catch(() => {
+      this.onText(t).catch((err: unknown) => {
+        this.deps.log.error({ err, daemonId: this.daemonId, state: this.state }, 'daemon ws: frame handling failed')
         if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
       })
     )
@@ -168,7 +169,8 @@ export class DaemonConnection implements ConnChannel {
     // rejection that takes down the CP process.
     try {
       await this.router.dispatch(frame, this, this.deps)
-    } catch {
+    } catch (err) {
+      this.deps.log.error({ err, daemonId: this.daemonId, type: frame.type }, 'daemon ws: frame dispatch failed')
       if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
     } finally {
       release?.()
@@ -364,12 +366,14 @@ export class DaemonConnection implements ConnChannel {
   }
 
   close(code: number, reason: string): void {
+    this.deps.log.warn?.({ daemonId: this.daemonId, state: this.state, code, reason }, 'daemon ws: closing connection')
     this.state = 'CLOSED'
     this.closing.abort()
     this.transport.close(code, reason)
   }
 
-  private onClose(_code: number, _reason: string): void {
+  private onClose(code: number, reason: string): void {
+    this.deps.log.warn?.({ daemonId: this.daemonId, state: this.state, code, reason }, 'daemon ws: connection closed')
     this.state = 'CLOSED'
     this.closing.abort()
     this.correlator.rejectAll(new ConnectionClosed())
