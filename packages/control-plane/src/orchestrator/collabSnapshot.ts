@@ -17,7 +17,12 @@
  * FOLLOW-UP (P2 scope-down, §6.5): `generation` is a plain counter passed by the
  * caller; per-entry tombstone / TTL / fail-closed-on-stale is not implemented.
  */
-import type { CollabRoutesSnapshot, CollabChannelRoute, CollabOrgAgent } from '@agentconnect.md/protocol'
+import type {
+  CollabAgentPlacement,
+  CollabRoutesSnapshot,
+  CollabChannelRoute,
+  CollabOrgAgent
+} from '@agentconnect.md/protocol'
 import { KNOWN_PLATFORMS, originKindOf } from '@agentconnect.md/protocol'
 import type { ChannelPlacementRecord, OrgAgentRecord } from '../persistence/ports.js'
 
@@ -56,6 +61,8 @@ export function buildCollabSnapshot(
 
   // (platform, channelId) → CollabChannelRoute
   const byChannel = new Map<string, CollabChannelRoute>()
+  // Frame-size budget: the daemon keys names by agentId, so one channel entry per agent carries them.
+  const named = new Set<string>()
   for (const p of placements) {
     // Nothing serves it (unplaced, or an unconfirmed pool grant) — channels[] holds no pending row.
     const daemonId = servingDaemonOf(p)
@@ -79,13 +86,12 @@ export function buildCollabSnapshot(
       (agentsByMentionIdentity.get(`${p.platform}\u0000${p.channelId}\u0000${p.botUserId}`)?.size ?? 0) > 1
         ? { botShared: true }
         : {}),
-      callPolicy: p.callPolicy,
-      allowedCallerAgentIds: p.allowedCallerAgentIds,
-      outboundPolicy: p.outboundPolicy,
-      allowedTargetAgentIds: p.allowedTargetAgentIds,
-      name: p.name,
-      ...(p.displayName !== undefined ? { displayName: p.displayName } : {})
-    })
+      ...compactPolicy(p),
+      ...(named.has(p.agentId)
+        ? {}
+        : { name: p.name, ...(p.displayName !== undefined ? { displayName: p.displayName } : {}) })
+    } as CollabAgentPlacement)
+    named.add(p.agentId)
   }
 
   // The FLAT org directory, alongside the channel-keyed routes. An agent with no IM
@@ -97,17 +103,32 @@ export function buildCollabSnapshot(
   // rather than failing closed as unknown. No `integrationId`/`botAppId`: both are
   // per-channel reply coordinates, not identity, and this entry is deliberately
   // channel-free.
-  const agents: CollabOrgAgent[] = orgAgents.map((a) => ({
-    orgId,
-    agentId: a.agentId,
-    ...(a.daemonId !== null ? { daemonId: a.daemonId } : {}),
-    callPolicy: a.callPolicy,
-    allowedCallerAgentIds: a.allowedCallerAgentIds,
-    outboundPolicy: a.outboundPolicy,
-    allowedTargetAgentIds: a.allowedTargetAgentIds,
-    name: a.name,
-    ...(a.displayName !== null ? { displayName: a.displayName } : {})
-  }))
+  const agents: CollabOrgAgent[] = orgAgents.map(
+    (a) =>
+      ({
+        orgId,
+        agentId: a.agentId,
+        ...(a.daemonId !== null ? { daemonId: a.daemonId } : {}),
+        ...compactPolicy(a),
+        name: a.name,
+        ...(a.displayName !== null ? { displayName: a.displayName } : {})
+      }) as CollabOrgAgent
+  )
 
   return { generation, channels: [...byChannel.values()], agents, platformKinds: PLATFORM_KINDS }
+}
+
+/** Call-policy fields minus their schema defaults, which the receiver's parse restores; keeps the snapshot under MAX_FRAME_BYTES. */
+function compactPolicy(p: {
+  callPolicy: 'all' | 'selected'
+  allowedCallerAgentIds: string[]
+  outboundPolicy: 'all' | 'selected'
+  allowedTargetAgentIds: string[]
+}): Partial<typeof p> {
+  return {
+    ...(p.callPolicy !== 'all' ? { callPolicy: p.callPolicy } : {}),
+    ...(p.allowedCallerAgentIds.length > 0 ? { allowedCallerAgentIds: p.allowedCallerAgentIds } : {}),
+    ...(p.outboundPolicy !== 'all' ? { outboundPolicy: p.outboundPolicy } : {}),
+    ...(p.allowedTargetAgentIds.length > 0 ? { allowedTargetAgentIds: p.allowedTargetAgentIds } : {})
+  }
 }
