@@ -113,6 +113,14 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   conn.state = 'READY'
   conn.replyTo(frame, 'register/ok', {
     ...snap,
+    // Frame-size budget: the channel table rides its own `collaboration/routes` EVT below, so
+    // register/ok stays under the daemon's MAX_FRAME_BYTES. The baseline is one generation older,
+    // so whichever of the two the daemon applies last, the full table wins.
+    collabRoutes: {
+      ...snap.collabRoutes,
+      generation: Math.max(0, snap.collabRoutes.generation - 1),
+      channels: []
+    },
     relays,
     ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
     // A shared image picks its original's home at publication, before any signing (webchat-generated-images.md §5).
@@ -201,6 +209,7 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       ...(deps.socketBotRevocation ? [INTEGRATION_REVOKED_FEATURE] : [])
     ]
   })
+  conn.send('collaboration/routes', snap.collabRoutes, { epoch: conn.sessionEpoch })
   deps.connReg.markReady(conn.daemonId, conn)
   deps.pullRequestFeedback?.kick()
   deps.followUpWatch?.kick()
