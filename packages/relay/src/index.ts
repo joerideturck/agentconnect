@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto'
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
+  RELAY_CP_MAX_FRAME_BYTES,
   RELAY_CP_SUBPROTOCOL,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   RC_COMPUTER_MEDIA_USAGE_MAX,
@@ -150,7 +151,12 @@ async function main(): Promise<void> {
     heartbeatDefaultMs: config.HEARTBEAT_DEFAULT_MS,
     clock: systemClock,
     connect: (opts) =>
-      ClientTransport.dial(wsOrigin, { subprotocol: RELAY_CP_SUBPROTOCOL, path: RELAY_WS_PATH, ...opts }),
+      ClientTransport.dial(wsOrigin, {
+        subprotocol: RELAY_CP_SUBPROTOCOL,
+        path: RELAY_WS_PATH,
+        maxPayload: RELAY_CP_MAX_FRAME_BYTES,
+        ...opts
+      }),
     log,
     onRegistered: (id) => log.info(`relay: registered with CP as ${id}`),
     onDeploymentConfig: (snapshot) => {

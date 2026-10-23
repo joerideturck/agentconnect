@@ -46,6 +46,20 @@ export class WsTransport implements Transport {
   }
 
   send(text: string): void {
+    const bytes = Buffer.byteLength(text)
+    if (bytes > 128 * 1024) {
+      // Debug aid: the peer closes 1009 above MAX_FRAME_BYTES; name the frame it rejected.
+      console.warn(
+        JSON.stringify({
+          level: 40,
+          time: Date.now(),
+          msg: 'ws: large outbound frame',
+          bytes,
+          remoteAddr: this.remoteAddr,
+          head: text.slice(0, 300)
+        })
+      )
+    }
     this.ws.send(text)
   }
 

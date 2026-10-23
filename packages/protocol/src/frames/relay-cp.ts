@@ -1522,8 +1522,11 @@ export function isRelayCpFrameType(t: string): t is RelayCpFrameType {
 }
 
 /** Decode one relay↔CP wire frame (envelope + typed payload). */
+/** CP→relay frames (bot assigns, snapshots) outgrow the generic 256 KiB cap on a busy install. */
+export const RELAY_CP_MAX_FRAME_BYTES = 16 * 1024 * 1024
+
 export function decodeRelayCpFrame(text: string): DecodeResultOf<RelayCpFrame> {
-  return decodeEnvelopeWith<RelayCpFrame>(RELAY_CP_SCHEMAS, text)
+  return decodeEnvelopeWith<RelayCpFrame>(RELAY_CP_SCHEMAS, text, { maxBytes: RELAY_CP_MAX_FRAME_BYTES })
 }
 
 /** Build a relay↔CP frame with a compile-time-typed payload. */
