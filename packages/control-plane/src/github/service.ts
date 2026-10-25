@@ -913,7 +913,7 @@ export class GithubService {
       const grant =
         opts.installationGrants === false
           ? undefined
-          : (await this.installationGrantsOf(agent)).find((row) => row.installationId === installation.installationId)
+          : this.grantCovering(await this.installationGrantsOf(agent), installation)
       if (grant) {
         await this.refreshGrantLogin(grant, installation)
         return { kind: 'installation', repoId, repoFullName: ref.fullName, access: grant.access, installation }
@@ -1020,6 +1020,12 @@ export class GithubService {
     if (!owner || !repo) return 'not_found'
     const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner, agent.githubAppId)
     if (!installation || installation.orgId !== agent.orgId || installation.suspendedAt) return 'no_access'
+    // Events arrive through the deployment App, and the relay matches a watch by the installation that
+    // delivered the event: the subscription names that one, while the read below uses the agent's own App.
+    const webhookInstallation = installation.githubAppId
+      ? await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner)
+      : installation
+    if (!webhookInstallation || webhookInstallation.suspendedAt) return 'no_access'
     const refused = (e: unknown) => {
       if (e instanceof GitCredDeniedError || e instanceof GithubApiError)
         return e.retryable ? 'unavailable' : 'no_access'
@@ -1045,7 +1051,7 @@ export class GithubService {
         { auth: cred.token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl }
       )
       return {
-        installationId: installation.installationId,
+        installationId: webhookInstallation.installationId,
         repoId: resolved.repoId,
         repoFullName: resolved.repoFullName,
         // An issue URL that names a pull request watches the pull request.
@@ -1239,7 +1245,7 @@ export class GithubService {
     // Grants come after rows and skill sources (decision 10); one whose installation is gone still names its account, to deny as a lease.
     const installationGrants = exact || skillExact ? [] : await this.installationGrantsOf(agent)
     const grant = installation
-      ? installationGrants.find((row) => row.installationId === installation.installationId)
+      ? this.grantCovering(installationGrants, installation)
       : installationGrants.find((row) => row.accountLogin.toLowerCase() === owner.toLowerCase())
     if (
       !exact &&
@@ -1332,6 +1338,16 @@ export class GithubService {
     if (!ins.githubAppId) return false
     const watched = await this.deps.installations.getByInstallationId(hookInstallationId)
     return !!watched && watched.accountLogin.toLowerCase() === ins.accountLogin.toLowerCase()
+  }
+
+  /** An installation grant names a deployment-App installation (the console lists only those). It covers
+   *  the agent's own installation on that account when the agent acts as a registered App. */
+  private grantCovering(
+    grants: AgentInstallationAuthorizationRecord[],
+    installation: GithubInstallationRecord
+  ): AgentInstallationAuthorizationRecord | undefined {
+    if (!installation.githubAppId) return grants.find((row) => row.installationId === installation.installationId)
+    return grants.find((row) => row.accountLogin.toLowerCase() === installation.accountLogin.toLowerCase())
   }
 
   private async installationGrantsOf(agent: AgentRecord): Promise<AgentInstallationAuthorizationRecord[]> {

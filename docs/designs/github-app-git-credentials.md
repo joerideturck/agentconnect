@@ -325,10 +325,15 @@ belongs to and sign with that App's key. Configs are cached per App because
 deletion invalidate the entry. Token caches stay keyed by installation id, so
 the two Apps never share an entry.
 
-**Hooks.** Events keep arriving through the deployment App, so a hook row names a
-deployment-App installation. An agent acting as a registered App resolves the
-same account's installation under its own App; `mintForHookReply` therefore
-compares the two installations by account rather than by id.
+**Hooks, grants and watches.** Events keep arriving through the deployment
+App, so a hook row names a deployment-App installation, the console grants an
+agent only deployment-App installations, and the relay matches a follow-up
+watch by the installation that delivered the event. An agent acting as a
+registered App resolves the same account's installation under its own App;
+`mintForHookReply` and the installation-grant lookups therefore compare the two
+installations by account rather than by id, and a follow-up watch subscribes
+on the deployment-App installation while its authorization and read use the
+agent's own App.
 
 **Prerequisites and limits.**
 

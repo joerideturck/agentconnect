@@ -1546,6 +1546,51 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     })
   })
 
+  it("an installation grant on the deployment App covers the agent's own App on that account", async () => {
+    const REVIEW_SCRATCH = { ...(SCRATCH_AGENT as object), githubAppId: 'app-review' } as never
+    const acmeGrant: AgentInstallationAuthorizationRecord = {
+      id: 'ia-1',
+      agentId: 'agent-scratch' as never,
+      provider: 'github',
+      installationId: 42n, // the deployment installation the console granted
+      accountLogin: 'acme',
+      access: 'write',
+      materialize: 'on-demand',
+      createdAt: new Date(0),
+      createdBy: null
+    }
+    const byAccount = {
+      acme: installation(),
+      'acme@app-review': installation({ id: 'row-2', installationId: 43n, githubAppId: 'app-review' })
+    }
+    const { svc, mintBodies } = harness({
+      rows: [],
+      installationGrants: [acmeGrant],
+      installationsByAccount: byAccount,
+      repoRefs: { 'acme/tools': { id: 111, full_name: 'acme/tools' }, 'acme/tools/pulls/7': { id: 0, full_name: '' } },
+      objects: { 'acme/tools/pulls/7': {} }
+    })
+
+    // Credentials and the by-id resolver behind reviews and Checks: the grant's tier, minted on the App's installation (43).
+    await expect(svc.mintForAgent(REVIEW_SCRATCH, [], CONTENTS, 'acme/tools')).resolves.toMatchObject({
+      access: 'write',
+      repoId: 111n
+    })
+    await expect(svc.resolveAgentRepoAuthorization(REVIEW_SCRATCH, 111n, 'acme/tools')).resolves.toMatchObject({
+      kind: 'installation',
+      access: 'write',
+      installation: { installationId: 43n }
+    })
+    // A follow-up watch subscribes on the installation that delivers the events (42), after reading with the App's own token.
+    await expect(svc.resolveWatchedObject(REVIEW_SCRATCH, 'acme/tools', 'pull', 7)).resolves.toEqual({
+      installationId: 42n,
+      repoId: 111n,
+      repoFullName: 'acme/tools',
+      subject: 'pull'
+    })
+    expect(mintBodies.every((body) => Array.isArray(body.repository_ids))).toBe(true)
+  })
+
   it('a general issues/PR ask still follows an additional repo comment-tier grant', async () => {
     const { svc, mintBodies } = harness({ rows: [grantRow({ access: 'comment' })] })
 
