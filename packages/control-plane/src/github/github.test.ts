@@ -1223,9 +1223,9 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       clock,
       installations: {
         get: async (id: string) => (id === 'row-1' ? (byAccount['acme'] ?? null) : null),
-        liveByOrgAndAccount: async (_orgId: string, account: string) => {
+        liveByOrgAndAccount: async (_orgId: string, account: string, githubAppId?: string | null) => {
           accountLookups.push(account)
-          return byAccount[account] ?? null
+          return byAccount[githubAppId ? `${account}@${githubAppId}` : account] ?? null
         },
         getByInstallationId: async (id: bigint) =>
           Object.values(byAccount).find((row) => row.installationId === id) ?? null
@@ -1523,6 +1523,27 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       code: 'SCOPE_DENIED'
     })
     expect(mintBodies).toHaveLength(1)
+  })
+
+  it("an agent acting as a registered App resolves that App's installation on the hook's account", async () => {
+    const REVIEW_AGENT = { ...READ_WORKSPACE_AGENT, githubAppId: 'app-review' } as never
+    const { svc, mintBodies, accountLookups } = harness({
+      rows: [],
+      installationsByAccount: {
+        acme: installation(),
+        'acme@app-review': installation({ id: 'row-2', installationId: 43n, githubAppId: 'app-review' })
+      }
+    })
+
+    // The hook row names the deployment installation (42); the agent's own App covers the same account (43).
+    const grant = await svc.mintForHookReply(REVIEW_AGENT, 'acme/tools', 777n, [], false, 42n)
+    expect(grant.token).toBe('ghs_1')
+    expect(accountLookups).toEqual(['acme'])
+    expect(mintBodies).toHaveLength(1)
+    // A hook on another account is still refused.
+    await expect(svc.mintForHookReply(REVIEW_AGENT, 'acme/tools', 777n, [], false, 44n)).rejects.toMatchObject({
+      code: 'SCOPE_DENIED'
+    })
   })
 
   it('a general issues/PR ask still follows an additional repo comment-tier grant', async () => {

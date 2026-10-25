@@ -68,6 +68,8 @@ import { relayDeploymentSnapshot } from './config/deployment.js'
 import type { FetchLike } from './github/api.js'
 import { ConnectorsClient, parseBlocklist, parseWhitelist } from './connectors/index.js'
 import { GithubService } from './github/service.js'
+import { GithubAppRegistry } from './github/app-registry.js'
+import { GithubAppsService } from './github/apps.service.js'
 import { RepoCandidatesService } from './github/repo-candidates.js'
 import { GithubInstallationDoorbell } from './github/installation-doorbell.service.js'
 import { GithubCommentAuthzService } from './github/comment-authz.service.js'
@@ -159,6 +161,8 @@ import {
   PresetAgentBackfill,
   PgGithubInstallationRepo,
   PgGithubInstallStateStore,
+  PgGithubAppRepo,
+  PgGithubAppSecretStore,
   PgAgentRepoAuthorizationRepo,
   PgAgentInstallationAuthorizationRepo,
   PgCodeHostRepositoryRepo,
@@ -617,6 +621,7 @@ export function buildContainer(
     waitlist: new PgWaitlistRepo(prisma),
     githubInstallation: new PgGithubInstallationRepo(prisma),
     githubInstallState: new PgGithubInstallStateStore(prisma),
+    githubApp: new PgGithubAppRepo(prisma),
     agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma),
     agentInstallationAuth: new PgAgentInstallationAuthorizationRepo(prisma),
     codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
@@ -1364,12 +1369,21 @@ export function buildContainer(
   }
   // github-app workspaces (opt-in): assembled only when GITHUB_APP_* is fully
   // configured; absent ⇒ routes 404 and the WS gitcred handler denies.
+  // Organization-registered Apps sign for their own installations (github-app-git-credentials.md §Dedicated Apps).
+  const githubAppRegistry = githubAppCfg
+    ? new GithubAppRegistry({
+        apps: repos.githubApp,
+        secrets: new PgGithubAppSecretStore(prisma, secretCipher),
+        installations: repos.githubInstallation
+      })
+    : undefined
   const github = githubAppCfg
     ? new GithubService({
         cfg: githubAppCfg,
         clock,
         installations: repos.githubInstallation,
         installState: repos.githubInstallState,
+        appRegistry: githubAppRegistry!,
         repoAuths: repos.agentRepoAuth,
         installationAuths: repos.agentInstallationAuth,
         skillSources: repos.skillSource,
@@ -1380,6 +1394,23 @@ export function buildContainer(
         ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
       })
     : undefined
+  const githubApps =
+    github && githubAppCfg && githubAppRegistry
+      ? new GithubAppsService({
+          apps: repos.githubApp,
+          secrets: new PgGithubAppSecretStore(prisma, secretCipher),
+          installations: repos.githubInstallation,
+          registry: githubAppRegistry,
+          deploymentAppId: githubAppCfg.appId,
+          botUserId: (slug) => github.botUserId(slug),
+          onInstallationChanged: async (installationId, orgId) => {
+            github.tokens.invalidateInstallation(installationId)
+            github.invalidateRepositoryRoster(installationId)
+            await wakeGithubReviewProjections(installationId, orgId)
+          },
+          ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
+        })
+      : undefined
   // GitLab.com OAuth administration (opt-in, gitlab-com-integration.md §9):
   // assembled only when GITLAB_CLIENT_ID/SECRET are configured AND the public
   // origin is known (the begin/callback URLs derive from it); absent ⇒ routes 404.
@@ -2218,6 +2249,7 @@ export function buildContainer(
       linearInstallState: repos.linearInstallState,
       presetAgent: repos.presetAgent,
       githubInstallation: repos.githubInstallation,
+      githubApp: repos.githubApp,
       agentRepoAuth: repos.agentRepoAuth,
       agentInstallationAuth: repos.agentInstallationAuth,
       codeHostRepository: repos.codeHostRepository,
@@ -2282,6 +2314,7 @@ export function buildContainer(
     resolvePublicRepo: createPublicRepoResolver(),
     trustedActors,
     ...(github ? { github } : {}),
+    ...(githubApps ? { githubApps } : {}),
     ...(gitlab ? { gitlab } : {}),
     gitea,
     ...(pullRequestView ? { pullRequestView } : {}),
