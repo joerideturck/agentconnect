@@ -913,7 +913,7 @@ export class GithubService {
       const grant =
         opts.installationGrants === false
           ? undefined
-          : this.grantCovering(await this.installationGrantsOf(agent), installation)
+          : await this.grantCovering(agent, await this.installationGrantsOf(agent), installation)
       if (grant) {
         await this.refreshGrantLogin(grant, installation)
         return { kind: 'installation', repoId, repoFullName: ref.fullName, access: grant.access, installation }
@@ -1245,7 +1245,7 @@ export class GithubService {
     // Grants come after rows and skill sources (decision 10); one whose installation is gone still names its account, to deny as a lease.
     const installationGrants = exact || skillExact ? [] : await this.installationGrantsOf(agent)
     const grant = installation
-      ? this.grantCovering(installationGrants, installation)
+      ? await this.grantCovering(agent, installationGrants, installation)
       : installationGrants.find((row) => row.accountLogin.toLowerCase() === owner.toLowerCase())
     if (
       !exact &&
@@ -1340,14 +1340,19 @@ export class GithubService {
     return !!watched && watched.accountLogin.toLowerCase() === ins.accountLogin.toLowerCase()
   }
 
-  /** An installation grant names a deployment-App installation (the console lists only those). It covers
-   *  the agent's own installation on that account when the agent acts as a registered App. */
-  private grantCovering(
+  /** An installation grant names a deployment-App installation (the console lists only those). When the
+   *  agent acts as a registered App, the grant covers the App's own installation on that account only
+   *  while the grant's installation is still the org's live, unsuspended deployment installation there:
+   *  a suspended, revoked or replaced installation leaves its grant as inert as for the default identity. */
+  private async grantCovering(
+    agent: AgentRecord,
     grants: AgentInstallationAuthorizationRecord[],
     installation: GithubInstallationRecord
-  ): AgentInstallationAuthorizationRecord | undefined {
+  ): Promise<AgentInstallationAuthorizationRecord | undefined> {
     if (!installation.githubAppId) return grants.find((row) => row.installationId === installation.installationId)
-    return grants.find((row) => row.accountLogin.toLowerCase() === installation.accountLogin.toLowerCase())
+    const deployment = await this.deps.installations.liveByOrgAndAccount(agent.orgId, installation.accountLogin)
+    if (!deployment || deployment.orgId !== agent.orgId || deployment.suspendedAt) return undefined
+    return grants.find((row) => row.installationId === deployment.installationId)
   }
 
   private async installationGrantsOf(agent: AgentRecord): Promise<AgentInstallationAuthorizationRecord[]> {

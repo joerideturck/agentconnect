@@ -1589,6 +1589,26 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       subject: 'pull'
     })
     expect(mintBodies.every((body) => Array.isArray(body.repository_ids))).toBe(true)
+
+    // The grant is bound to deployment installation 42: suspended, revoked (gone) or replaced, it is inert for the App too.
+    for (const acme of [
+      installation({ suspendedAt: new Date(0) }),
+      undefined,
+      installation({ id: 'row-3', installationId: 44n })
+    ]) {
+      const inert = harness({
+        rows: [],
+        installationGrants: [acmeGrant],
+        installationsByAccount: { 'acme@app-review': byAccount['acme@app-review'], ...(acme ? { acme } : {}) },
+        repoRefs: { 'acme/tools': { id: 111, full_name: 'acme/tools' } }
+      })
+      await expect(inert.svc.mintForAgent(REVIEW_SCRATCH, [], CONTENTS, 'acme/tools')).rejects.toMatchObject({
+        code: 'SCOPE_DENIED'
+      })
+      await expect(inert.svc.resolveAgentRepoAuthorization(REVIEW_SCRATCH, 111n, 'acme/tools')).rejects.toMatchObject({
+        code: 'SCOPE_DENIED'
+      })
+    }
   })
 
   it('a general issues/PR ask still follows an additional repo comment-tier grant', async () => {
