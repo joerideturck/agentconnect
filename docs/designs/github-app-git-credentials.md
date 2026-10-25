@@ -333,10 +333,12 @@ registered App resolves the same account's installation under its own App;
 `mintForHookReply` and the installation-grant lookups therefore compare the two
 installations by account rather than by id, and a follow-up watch subscribes
 on the deployment-App installation while its authorization and read use the
-agent's own App. A grant stays bound to the deployment installation it names:
-it covers the App's installation only while that one is still the org's live,
-unsuspended installation on the account, so a suspended, revoked or replaced
-installation leaves the grant inert for every identity.
+agent's own App. A grant stays bound to the deployment installation it names
+and to the repositories that installation covers: it covers the App's
+installation only while that one is still the org's live, unsuspended
+installation on the account and still reaches the repository, so a suspended,
+revoked or replaced installation, or a repository removed from it, leaves the
+grant inert for every identity.
 
 **Prerequisites and limits.**
 

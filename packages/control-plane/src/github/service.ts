@@ -913,10 +913,10 @@ export class GithubService {
       const grant =
         opts.installationGrants === false
           ? undefined
-          : await this.grantCovering(agent, await this.installationGrantsOf(agent), installation)
+          : await this.grantCovering(agent, await this.installationGrantsOf(agent), installation, owner, repo, repoId)
       if (grant) {
-        await this.refreshGrantLogin(grant, installation)
-        return { kind: 'installation', repoId, repoFullName: ref.fullName, access: grant.access, installation }
+        await this.refreshGrantLogin(grant.grant, installation)
+        return { kind: 'installation', repoId, repoFullName: ref.fullName, access: grant.grant.access, installation }
       }
       throw repoRefusal(repoFullName, opts.installationGrants !== false, row)
     }
@@ -1245,7 +1245,7 @@ export class GithubService {
     // Grants come after rows and skill sources (decision 10); one whose installation is gone still names its account, to deny as a lease.
     const installationGrants = exact || skillExact ? [] : await this.installationGrantsOf(agent)
     const grant = installation
-      ? await this.grantCovering(agent, installationGrants, installation)
+      ? await this.grantCovering(agent, installationGrants, installation, owner, repo)
       : installationGrants.find((row) => row.accountLogin.toLowerCase() === owner.toLowerCase())
     if (
       !exact &&
@@ -1308,9 +1308,13 @@ export class GithubService {
         return { kind: 'skill-source', repoId: renamedSkill.repoId, repoFullName, access: 'read', installation }
       }
       // The grant's tier, minted by the resolved id; the echo keeps the requested name for the daemon's guard.
-      if (grant) {
-        await this.refreshGrantLogin(grant, installation)
-        return { kind: 'installation', repoId: ref.repoId, repoFullName, access: grant.access, installation }
+      if (
+        grant &&
+        ('grant' in grant ? grant.coveredRepoId === undefined || grant.coveredRepoId === ref.repoId : true)
+      ) {
+        const row = 'grant' in grant ? grant.grant : grant
+        await this.refreshGrantLogin(row, installation)
+        return { kind: 'installation', repoId: ref.repoId, repoFullName, access: row.access, installation }
       }
       throw repoRefusal(
         repoFullName,
@@ -1340,19 +1344,33 @@ export class GithubService {
     return !!watched && watched.accountLogin.toLowerCase() === ins.accountLogin.toLowerCase()
   }
 
-  /** An installation grant names a deployment-App installation (the console lists only those). When the
-   *  agent acts as a registered App, the grant covers the App's own installation on that account only
-   *  while the grant's installation is still the org's live, unsuspended deployment installation there:
-   *  a suspended, revoked or replaced installation leaves its grant as inert as for the default identity. */
+  /** An installation grant names a deployment-App installation (the console lists only those) and
+   *  authorizes the repositories that installation covers. When the agent acts as a registered App, the
+   *  grant covers the App's own installation on that account only while the grant's installation is
+   *  still the org's live, unsuspended deployment installation there AND still covers the repository:
+   *  a suspended, revoked or replaced installation, or a repository removed from it, leaves the grant as
+   *  inert as for the default identity. `coveredRepoId` is the repository as the granted installation
+   *  resolves it; a caller that resolves the name later must find the same id. */
   private async grantCovering(
     agent: AgentRecord,
     grants: AgentInstallationAuthorizationRecord[],
-    installation: GithubInstallationRecord
-  ): Promise<AgentInstallationAuthorizationRecord | undefined> {
-    if (!installation.githubAppId) return grants.find((row) => row.installationId === installation.installationId)
+    installation: GithubInstallationRecord,
+    owner: string,
+    repo: string,
+    repoId?: bigint
+  ): Promise<{ grant: AgentInstallationAuthorizationRecord; coveredRepoId?: bigint } | undefined> {
+    if (!installation.githubAppId) {
+      // The caller's ref resolved through this very installation, which is the coverage proof the grant needs.
+      const grant = grants.find((row) => row.installationId === installation.installationId)
+      return grant ? { grant } : undefined
+    }
     const deployment = await this.deps.installations.liveByOrgAndAccount(agent.orgId, installation.accountLogin)
     if (!deployment || deployment.orgId !== agent.orgId || deployment.suspendedAt) return undefined
-    return grants.find((row) => row.installationId === deployment.installationId)
+    const grant = grants.find((row) => row.installationId === deployment.installationId)
+    if (!grant) return undefined
+    const covered = await this.repoRefFor(deployment, owner, repo)
+    if (!covered || (repoId !== undefined && covered.repoId !== repoId)) return undefined
+    return { grant, coveredRepoId: covered.repoId }
   }
 
   private async installationGrantsOf(agent: AgentRecord): Promise<AgentInstallationAuthorizationRecord[]> {

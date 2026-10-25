@@ -1178,6 +1178,8 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     installationsByAccount?: Record<string, GithubInstallationRecord>
     /** GET /repos/{owner}/{repo} answers, keyed lowercase; missing ⇒ 404. */
     repoRefs?: Record<string, { id: number; full_name: string }>
+    /** Per-installation overrides of `repoRefs`, keyed by installation id: what THAT installation covers. */
+    repoRefsByInstallation?: Record<string, Record<string, { id: number; full_name: string }>>
     withRepoAuths?: boolean
     /** Skill-source registry rows by name (shared-skills.md §3 read grants). */
     skillSources?: Record<string, SkillSourceRecord>
@@ -1195,8 +1197,12 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       if (url.includes('/access_tokens')) {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>
         if (body.repositories || body.repository_ids) mintBodies.push(body)
+        const installationId = /\/app\/installations\/(\d+)\//.exec(url)?.[1] ?? '0'
         return Response.json(
-          { token: `ghs_${mintBodies.length}`, expires_at: new Date(clock.now() + 3_600_000).toISOString() },
+          {
+            token: `ghs_${mintBodies.length}_i${installationId}`,
+            expires_at: new Date(clock.now() + 3_600_000).toISOString()
+          },
           { status: 201 }
         )
       }
@@ -1208,7 +1214,9 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       const repoPath = /\/repos\/([^/]+\/[^/]+)$/.exec(url)
       if (repoPath) {
         repoLookups.push(repoPath[1]!)
-        const hit = opts.repoRefs?.[repoPath[1]!.toLowerCase()]
+        const viaInstallation = /_i(\d+)$/.exec(new Headers(init?.headers).get('authorization') ?? '')?.[1]
+        const refs = (viaInstallation && opts.repoRefsByInstallation?.[viaInstallation]) || opts.repoRefs
+        const hit = refs?.[repoPath[1]!.toLowerCase()]
         if (!hit) return Response.json({ message: 'Not Found' }, { status: 404 })
         return Response.json({ ...hit, private: true }, { status: 200 })
       }
@@ -1537,7 +1545,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
 
     // The hook row names the deployment installation (42); the agent's own App covers the same account (43).
     const grant = await svc.mintForHookReply(REVIEW_AGENT, 'acme/tools', 777n, [], false, 42n)
-    expect(grant.token).toBe('ghs_1')
+    expect(grant.token).toMatch(/^ghs_1_i43$/)
     expect(accountLookups).toEqual(['acme'])
     expect(mintBodies).toHaveLength(1)
     // A hook on another account is still refused.
@@ -1589,6 +1597,21 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       subject: 'pull'
     })
     expect(mintBodies.every((body) => Array.isArray(body.repository_ids))).toBe(true)
+
+    // The grant authorizes what deployment installation 42 covers: a repository removed from it is out of reach for the App.
+    const removed = harness({
+      rows: [],
+      installationGrants: [acmeGrant],
+      installationsByAccount: byAccount,
+      repoRefs: { 'acme/tools': { id: 111, full_name: 'acme/tools' } },
+      repoRefsByInstallation: { '42': {} }
+    })
+    await expect(removed.svc.mintForAgent(REVIEW_SCRATCH, [], CONTENTS, 'acme/tools')).rejects.toMatchObject({
+      code: 'SCOPE_DENIED'
+    })
+    await expect(removed.svc.resolveAgentRepoAuthorization(REVIEW_SCRATCH, 111n, 'acme/tools')).rejects.toMatchObject({
+      code: 'SCOPE_DENIED'
+    })
 
     // The grant is bound to deployment installation 42: suspended, revoked (gone) or replaced, it is inert for the App too.
     for (const acme of [
