@@ -915,12 +915,15 @@ The implemented surface follows `McpServersCard`:
   claims, active-roster overlap validation, and exact byte receipts govern
   publication/removal. The installer does not mutate repository ignore
   configuration or depend on Git metadata for ownership.
-- **Installed bundles are read-only to the model's tools:** the launch names every bundle the
-  workspace ledger owns, under each skill root that reaches it, in the same read-only set as the
-  runtime's private state (Claude's inner Bash sandbox `denyWrite` and `Edit` deny rules, Codex's
-  `read` profile entries). An edit there would be lost at the next publication, and a directory
-  left behind in a bundle (a bytecode cache, an editor's write-staging directory) makes its
-  receipt walk refuse that publication. Bundles the ledger does not own, such as skills
+- **Installed bundles are read-only:** a bundle is published without owner-write (directories
+  `0500`, files `0400` or `0500`) once its marker is gone, so neither the model's tools nor the
+  runtime's own housekeeping (Claude Code makes `.claude/.cc-writes` in each directory a session
+  works in) can leave anything inside it; the helper gives the write bit back only to remove a tree
+  it owns. A directory that still lands in a bundle and holds no file is dropped at the next
+  publication, like a bytecode cache; one that holds a file makes the bundle read as edited and skips
+  it as a conflict. The launch also names every owned bundle, under each skill root that reaches it,
+  in the read-only set of the runtime's tool sandbox (Claude's inner Bash sandbox `denyWrite` and
+  `Edit` deny rules, Codex's `read` profile entries). Bundles the ledger does not own, such as skills
   committed to the checkout, stay writable.
 - **Authority-domain runtime trust:** executable skill authority is stored under
   the daemon's UID. Per the normative execution trust model, an unsandboxed ACP
