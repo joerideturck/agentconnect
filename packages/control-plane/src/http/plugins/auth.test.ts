@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import Fastify from 'fastify'
 import { exportJWK, generateKeyPair, SignJWT } from 'jose'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WebchatMcpGrantTokenCodec } from '../../registry/webchatMcpGrantToken.js'
 import { INTERNAL_INVOCATION_AUTH_HEADER, InternalInvocationAuth } from '../mcp/internal-invocation-auth.js'
 import type { InvocationContext } from '../mcp/remote-grant-authenticator.js'
@@ -188,6 +188,114 @@ describe('humanAuthPlugin identity warm trigger (api-key path)', () => {
 
     expect(response.statusCode).toBe(200)
     expect(warm).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('humanAuthPlugin acting as a member', () => {
+  const serviceKey: VerifyApiKey = async () => ({
+    userId: 'sa-1',
+    orgId: 'org-1',
+    apiKeyId: 'key-sa',
+    scopes: [],
+    permission: 'full',
+    selection: { allAgents: false, agentIds: [] }
+  })
+  const resolveActAs = vi.fn(async (orgId: string, email: string) =>
+    orgId === 'org-1' && email === 'ann@example.com' ? { userId: 'user-ann', oidcSubject: 'sub-ann' } : null
+  )
+  async function appActingAs(options: Partial<HumanAuthOptions> = {}) {
+    const app = Fastify({ logger: false })
+    apps.push(app)
+    await app.register(humanAuthPlugin, {
+      DEFAULT_OWNER_ID: 'dev-owner',
+      ACT_AS_KEY_IDS: ['key-sa'],
+      verifyApiKey: serviceKey,
+      resolveActAs,
+      ...options
+    })
+    app.get('/api/v1/probe', { preHandler: app.humanAuth }, async (req) => ({
+      principal: req.principal,
+      oidcSubject: req.oidcSubject ?? null,
+      apiKeyId: req.apiKeyId,
+      actingAsFromUserId: req.actingAsFromUserId ?? null
+    }))
+    await app.ready()
+    return app
+  }
+  const probe = (app: Awaited<ReturnType<typeof appActingAs>>, headers: Record<string, string>) =>
+    app.inject({ method: 'GET', url: '/api/v1/probe', headers: { authorization: 'Bearer k3y', ...headers } })
+
+  beforeEach(() => resolveActAs.mockClear())
+
+  it('runs the request as the named member, with their subject, and records the key behind it', async () => {
+    const app = await appActingAs()
+    const response = await probe(app, { 'x-ac-act-as': ' Ann@Example.com ' })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({
+      principal: { userId: 'user-ann', email: 'ann@example.com' },
+      oidcSubject: 'sub-ann',
+      apiKeyId: 'key-sa',
+      actingAsFromUserId: 'sa-1'
+    })
+    expect(resolveActAs).toHaveBeenCalledWith('org-1', 'ann@example.com')
+  })
+
+  it('warms the identity projection for the member, not the service account', async () => {
+    const warm = vi.fn<EnsureIdentityFresh>()
+    const app = await appActingAs({ ensureIdentityFresh: warm })
+    await probe(app, { 'x-ac-act-as': 'ann@example.com' })
+    expect(warm).toHaveBeenCalledWith({ userId: 'user-ann', oidcSubject: 'sub-ann' })
+  })
+
+  it('stays the key itself without the header', async () => {
+    const app = await appActingAs()
+    const response = await probe(app, {})
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({
+      principal: { userId: 'sa-1' },
+      oidcSubject: null,
+      actingAsFromUserId: null
+    })
+    expect(resolveActAs).not.toHaveBeenCalled()
+  })
+
+  it('refuses an address that is not a member, without saying so', async () => {
+    const app = await appActingAs()
+    const response = await probe(app, { 'x-ac-act-as': 'nobody@example.com' })
+    expect(response.statusCode).toBe(403)
+    expect(response.json().message).toBe('cannot act as that member')
+  })
+
+  it('refuses a key outside ACT_AS_KEY_IDS, even a full one', async () => {
+    const app = await appActingAs({ ACT_AS_KEY_IDS: ['another-key'] })
+    const response = await probe(app, { 'x-ac-act-as': 'ann@example.com' })
+    expect(response.statusCode).toBe(403)
+    expect(response.json().message).toBe('this key may not act as a member')
+    expect(resolveActAs).not.toHaveBeenCalled()
+  })
+
+  it('refuses a narrowed key and a scoped token', async () => {
+    for (const narrowed of [
+      { permission: 'read' as const, scopes: [] as string[] },
+      { permission: 'full' as const, scopes: ['mcp:read', 'mcp:write'] }
+    ]) {
+      const app = await appActingAs({
+        verifyApiKey: async () => ({ ...(await serviceKey('k3y'))!, ...narrowed })
+      })
+      const response = await probe(app, { 'x-ac-act-as': 'ann@example.com' })
+      expect(response.statusCode).toBe(403)
+    }
+    expect(resolveActAs).not.toHaveBeenCalled()
+  })
+
+  it('answers 503 when the member lookup errors, never 401', async () => {
+    const app = await appActingAs({
+      resolveActAs: async () => {
+        throw new Error('store down')
+      }
+    })
+    const response = await probe(app, { 'x-ac-act-as': 'ann@example.com' })
+    expect(response.statusCode).toBe(503)
   })
 })
 
