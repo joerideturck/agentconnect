@@ -38,4 +38,9 @@ describe('httpServerConfigFrom', () => {
     expect(projected.OPENAPI_PATH_PREFIX).toBe('/v1')
     expect(projected.OIDC_ISSUER).toBe('https://auth.example.test')
   })
+
+  it('carries the service accounts that may act as a member', () => {
+    const projected = httpServerConfigFrom(appConfig({ ACT_AS_SERVICE_ACCOUNTS: ['qargo-widget'] }), EXTRAS)
+    expect(projected.ACT_AS_SERVICE_ACCOUNTS).toEqual(['qargo-widget'])
+  })
 })
