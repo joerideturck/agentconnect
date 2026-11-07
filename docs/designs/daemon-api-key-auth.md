@@ -425,12 +425,15 @@ reads their role. `req.apiKeyId` stays the service account's key and
 both. The member list, session reads, webchat token mints and continuations
 need no change: they see a member.
 
-- **Who may.** The key must be listed in `ACT_AS_KEY_IDS`, a comma-separated
-  list of key ids in the control plane's environment, so the grant is an
-  operator decision made outside the console; a key's holder never gains it
-  by role. The key must be `full` and carry no scopes: a narrowed key or an
-  OAuth token is refused with 403 `this key may not act as a member`, as is
-  any key outside the list.
+- **Who may.** The key must belong to a service account listed in
+  `ACT_AS_SERVICE_ACCOUNTS`, a comma-separated list in the control plane's
+  environment of the names given at creation (`qargo-widget`) or full
+  `<name>-<suffix>@sa.agentconnect.md` addresses, so the grant is an operator
+  decision made outside the console, a key's holder never gains it by role,
+  and rotating the account's key changes nothing. The key must be `full` and
+  carry no scopes: a narrowed key or an OAuth token is refused with 403
+  `this key may not act as a member`, as is any key of an account outside the
+  list, including a person's own key.
 - **Who it reaches.** The email must match a member of the key's own
   organization, compared case-insensitively against the member list, which
   omits service accounts; a synthetic placeholder address never matches. No
@@ -443,7 +446,7 @@ need no change: they see a member.
 - **Security.** The header is trusted on the strength of the key alone, so
   that key is as sensitive as every member's sign-in combined: keep it in a
   secret store on the server that verifies the users, never in a browser, and
-  put nothing else on the list.
+  put no other account on the list.
 
 Tests should cover:
 

@@ -55,8 +55,6 @@ export interface HumanAuthConfig {
   OIDC_AUDIENCE?: string
   /** The user the devAuth stub injects (the bootstrapped owner of the local default org). */
   DEFAULT_OWNER_ID: string
-  /** Ids of the service-account keys that may act as a member named by `X-AC-Act-As` (Acting as a member below). */
-  ACT_AS_KEY_IDS?: string[]
 }
 
 /**
@@ -141,18 +139,21 @@ export type EnsureIdentityFresh = (principal: { userId: string; oidcSubject?: st
  * Acting as a member (daemon-api-key-auth.md): a server the organization runs (a chat widget inside another
  * product, a bridge from another sign-in) authenticates its users itself and names one per request in
  * `X-AC-Act-As: <email>`. The request then runs as that member: their role, their sessions, their linked
- * identities, the webchat conversations they own. Only a `full` service-account key listed in
- * `ACT_AS_KEY_IDS` may do this, so the grant is an operator decision, never something a key holder gains.
- * The resolver maps the email to a member of the key's organization, or null when there is none (a
- * service account, an unknown address, a synthetic placeholder email).
+ * identities, the webchat conversations they own. Only a `full` key of a service account the operator
+ * listed (`ACT_AS_SERVICE_ACCOUNTS`) may do this, so the grant is an operator decision, never something a
+ * key holder gains, and a key rotation changes nothing. `allowed` answers for the key's own user; `resolve`
+ * maps the email to a member of the key's organization, or null when there is none (a service account, an
+ * unknown address, a synthetic placeholder email).
  */
 export const ACT_AS_HEADER = 'x-ac-act-as'
+export type ActAsAllowed = (key: { apiKeyId: string; userId: string; orgId: string }) => Promise<boolean>
 export type ResolveActAs = (orgId: string, email: string) => Promise<{ userId: string; oidcSubject?: string } | null>
 
 /** Registration options: the config plus the optional JIT resolver + API-key verifier. */
 export type HumanAuthOptions = HumanAuthConfig & {
   resolveUser?: ResolveOidcUser
   verifyApiKey?: VerifyApiKey
+  actAsAllowed?: ActAsAllowed
   resolveActAs?: ResolveActAs
   principalExists?: PrincipalExists
   deletedIdentities?: DeletedIdentityStore
@@ -511,7 +512,7 @@ function withApiKeyAuth(
   verify: VerifyApiKey,
   base: preHandlerHookHandler,
   ensureIdentityFresh?: EnsureIdentityFresh,
-  actAs?: { keyIds: readonly string[]; resolve?: ResolveActAs }
+  actAs?: { allowed?: ActAsAllowed; resolve?: ResolveActAs }
 ): preHandlerHookHandler {
   // Our dev/oidc handlers are async 2-arg preHandlers (Fastify awaits them, never
   // passing `done`); call `base` through that shape rather than the 3-arg hook type.
@@ -558,20 +559,21 @@ function withApiKeyAuth(
     let oidcSubject: string | undefined
     if (actAsEmail) {
       // A `full` personal key without scopes: an OAuth token or a narrowed key never acts for someone else,
-      // and a key outside the operator's list is refused even when its holder is an owner.
-      if (
-        !actAs?.resolve ||
-        !actAs.keyIds.includes(resolved.apiKeyId) ||
-        resolved.permission !== 'full' ||
-        resolved.scopes.length > 0
-      ) {
-        return reply
-          .code(403)
-          .send({ error: 'Forbidden', statusCode: 403, message: 'this key may not act as a member' })
-      }
+      // and a key of an account outside the operator's list is refused even when its holder is an owner.
       let member: Awaited<ReturnType<ResolveActAs>>
       try {
-        member = await actAs.resolve(resolved.orgId, actAsEmail)
+        const allowed =
+          actAs?.allowed !== undefined &&
+          actAs.resolve !== undefined &&
+          resolved.permission === 'full' &&
+          resolved.scopes.length === 0 &&
+          (await actAs.allowed({ apiKeyId: resolved.apiKeyId, userId: resolved.userId, orgId: resolved.orgId }))
+        if (!allowed) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'this key may not act as a member' })
+        }
+        member = await actAs.resolve!(resolved.orgId, actAsEmail)
       } catch (err) {
         req.log.error({ err }, 'humanAuth: act-as member lookup errored')
         return reply
@@ -635,7 +637,7 @@ export const humanAuthPlugin = fp(
     const base = realOidc ?? devAuth(cfg, app.log)
     const externalHandler = cfg.verifyApiKey
       ? withApiKeyAuth(cfg.verifyApiKey, base, cfg.ensureIdentityFresh, {
-          keyIds: cfg.ACT_AS_KEY_IDS ?? [],
+          allowed: cfg.actAsAllowed,
           resolve: cfg.resolveActAs
         })
       : base

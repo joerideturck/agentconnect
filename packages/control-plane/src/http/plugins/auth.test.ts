@@ -203,13 +203,14 @@ describe('humanAuthPlugin acting as a member', () => {
   const resolveActAs = vi.fn(async (orgId: string, email: string) =>
     orgId === 'org-1' && email === 'ann@example.com' ? { userId: 'user-ann', oidcSubject: 'sub-ann' } : null
   )
+  const actAsAllowed = vi.fn(async (key: { apiKeyId: string; userId: string; orgId: string }) => key.userId === 'sa-1')
   async function appActingAs(options: Partial<HumanAuthOptions> = {}) {
     const app = Fastify({ logger: false })
     apps.push(app)
     await app.register(humanAuthPlugin, {
       DEFAULT_OWNER_ID: 'dev-owner',
-      ACT_AS_KEY_IDS: ['key-sa'],
       verifyApiKey: serviceKey,
+      actAsAllowed,
       resolveActAs,
       ...options
     })
@@ -225,7 +226,10 @@ describe('humanAuthPlugin acting as a member', () => {
   const probe = (app: Awaited<ReturnType<typeof appActingAs>>, headers: Record<string, string>) =>
     app.inject({ method: 'GET', url: '/api/v1/probe', headers: { authorization: 'Bearer k3y', ...headers } })
 
-  beforeEach(() => resolveActAs.mockClear())
+  beforeEach(() => {
+    resolveActAs.mockClear()
+    actAsAllowed.mockClear()
+  })
 
   it('runs the request as the named member, with their subject, and records the key behind it', async () => {
     const app = await appActingAs()
@@ -237,6 +241,7 @@ describe('humanAuthPlugin acting as a member', () => {
       apiKeyId: 'key-sa',
       actingAsFromUserId: 'sa-1'
     })
+    expect(actAsAllowed).toHaveBeenCalledWith({ apiKeyId: 'key-sa', userId: 'sa-1', orgId: 'org-1' })
     expect(resolveActAs).toHaveBeenCalledWith('org-1', 'ann@example.com')
   })
 
@@ -251,6 +256,7 @@ describe('humanAuthPlugin acting as a member', () => {
     const app = await appActingAs()
     const response = await probe(app, {})
     expect(response.statusCode).toBe(200)
+    expect(actAsAllowed).not.toHaveBeenCalled()
     expect(response.json()).toMatchObject({
       principal: { userId: 'sa-1' },
       oidcSubject: null,
@@ -266,8 +272,8 @@ describe('humanAuthPlugin acting as a member', () => {
     expect(response.json().message).toBe('cannot act as that member')
   })
 
-  it('refuses a key outside ACT_AS_KEY_IDS, even a full one', async () => {
-    const app = await appActingAs({ ACT_AS_KEY_IDS: ['another-key'] })
+  it('refuses a key of an account that is not listed, even a full one', async () => {
+    const app = await appActingAs({ actAsAllowed: async () => false })
     const response = await probe(app, { 'x-ac-act-as': 'ann@example.com' })
     expect(response.statusCode).toBe(403)
     expect(response.json().message).toBe('this key may not act as a member')
