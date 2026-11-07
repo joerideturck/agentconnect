@@ -148,6 +148,16 @@ const CoreConfigShape = {
         .map((id) => id.trim())
         .filter(Boolean)
     ),
+  // Service-account keys that may act as a member of their organization by email (daemon-api-key-auth.md, Acting as a member).
+  ACT_AS_KEY_IDS: z
+    .string()
+    .default('')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean)
+    ),
   // Users whose AHP OAuth tokens are admitted before public access (ahp-client-sign-in.md §4).
   AHP_TEST_USER_IDS: z
     .string()
