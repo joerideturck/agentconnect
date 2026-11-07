@@ -148,8 +148,9 @@ const CoreConfigShape = {
         .map((id) => id.trim())
         .filter(Boolean)
     ),
-  // Service-account keys that may act as a member of their organization by email (daemon-api-key-auth.md, Acting as a member).
-  ACT_AS_KEY_IDS: z
+  // Service accounts whose keys may act as a member of their organization by email (daemon-api-key-auth.md, Acting as
+  // a member): the name given at creation (`qargo-widget`), or the full `<name>-<suffix>@sa.agentconnect.md` address.
+  ACT_AS_SERVICE_ACCOUNTS: z
     .string()
     .default('')
     .transform((value) =>

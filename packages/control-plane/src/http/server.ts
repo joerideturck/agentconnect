@@ -176,8 +176,18 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       return user
     },
     verifyApiKey: (token) => deps.apiKeys.authenticateUser(token),
-    // Acting as a member (daemon-api-key-auth.md): the email names a member of the key's own org. The
+    // Acting as a member (daemon-api-key-auth.md): the key must belong to a listed service account, by the
+    // name it was created with or its full address; the email names a member of the key's own org. The
     // member list already omits service accounts and synthetic placeholder addresses never match a real one.
+    actAsAllowed: async ({ userId }) => {
+      const listed = deps.config.ACT_AS_SERVICE_ACCOUNTS ?? []
+      if (listed.length === 0 || !(await deps.repos.user.isServiceAccount(userId))) return false
+      const email = (await deps.repos.user.getProfile(userId))?.email?.toLowerCase()
+      if (!email) return false
+      // `<name>-<six random letters and digits>@sa.agentconnect.md` (daemon-api-key-auth.md, Service-account members).
+      const name = email.replace(/-[a-z0-9]{6}@sa\.agentconnect\.md$/, '')
+      return listed.some((entry) => entry.toLowerCase() === email || entry.toLowerCase() === name)
+    },
     resolveActAs: async (orgId, email) => {
       const member = (await deps.repos.user.listMembers(orgId)).find((m) => m.email?.toLowerCase() === email)
       if (!member) return null

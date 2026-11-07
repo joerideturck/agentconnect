@@ -141,6 +141,8 @@ import type { RuntimeConfigRouteDeps } from './routes/runtime-config.js'
 import type { ProviderKeyProvider } from '@agentconnect.md/protocol'
 
 export interface HttpServerConfig extends HumanAuthConfig {
+  /** Service accounts whose keys may act as a member (daemon-api-key-auth.md, Acting as a member). */
+  ACT_AS_SERVICE_ACCOUNTS?: string[]
   AHP_MODE?: 'off' | 'shadow' | 'on'
   WEBCHAT_PROTOCOL?: 'legacy' | 'ahp'
   SLACK_INSTALL_TTL_SEC?: number
