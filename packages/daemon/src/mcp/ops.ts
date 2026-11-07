@@ -158,7 +158,13 @@ import {
   READ_ATTACHMENT_ARGS,
   type PlatformReadDeps
 } from './ops/platform-reads.js'
-import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
+import {
+  sessionLink,
+  SESSION_LINK_ARGS,
+  viewSessionStatus,
+  VIEW_SESSION_STATUS_ARGS,
+  type SessionOpsDeps
+} from './ops/session.js'
 import {
   assertPlaceRead,
   isPlatformPost,
@@ -291,6 +297,7 @@ export interface OpsDeps
 const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<OpsDeps>>([
   ['shareFile', shareFile],
   ['viewSessionStatus', viewSessionStatus],
+  ['sessionLink', sessionLink],
   ['describeMemoryEntries', describeMemoryEntries],
   ['listMemoryEntries', listMemoryEntries],
   ['getMemoryEntry', getMemoryEntry],
@@ -369,6 +376,7 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
  */
 export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['viewSessionStatus', VIEW_SESSION_STATUS_ARGS],
+  ['sessionLink', SESSION_LINK_ARGS],
   ['describeMemoryEntries', DESCRIBE_MEMORY_ENTRIES_ARGS],
   ['listMemoryEntries', LIST_MEMORY_ENTRIES_ARGS],
   ['getMemoryEntry', GET_MEMORY_ENTRY_ARGS],
