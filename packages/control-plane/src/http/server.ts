@@ -176,6 +176,14 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       return user
     },
     verifyApiKey: (token) => deps.apiKeys.authenticateUser(token),
+    // Acting as a member (daemon-api-key-auth.md): the email names a member of the key's own org. The
+    // member list already omits service accounts and synthetic placeholder addresses never match a real one.
+    resolveActAs: async (orgId, email) => {
+      const member = (await deps.repos.user.listMembers(orgId)).find((m) => m.email?.toLowerCase() === email)
+      if (!member) return null
+      const oidcSubject = await deps.repos.user.getOidcSubject(member.userId)
+      return { userId: member.userId, ...(oidcSubject ? { oidcSubject } : {}) }
+    },
     internalInvocationAuth: deps.internalInvocationAuth,
     // Identity warm-at-touch (session-access-cold-visit.md §3): every authenticated
     // request pre-warms the caller's Logto projection so a cold `/sessions` finds it

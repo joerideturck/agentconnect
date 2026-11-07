@@ -55,6 +55,8 @@ export interface HumanAuthConfig {
   OIDC_AUDIENCE?: string
   /** The user the devAuth stub injects (the bootstrapped owner of the local default org). */
   DEFAULT_OWNER_ID: string
+  /** Ids of the service-account keys that may act as a member named by `X-AC-Act-As` (Acting as a member below). */
+  ACT_AS_KEY_IDS?: string[]
 }
 
 /**
@@ -135,10 +137,23 @@ export interface DeletedIdentityStore {
  */
 export type EnsureIdentityFresh = (principal: { userId: string; oidcSubject?: string }) => void
 
+/**
+ * Acting as a member (daemon-api-key-auth.md): a server the organization runs (a chat widget inside another
+ * product, a bridge from another sign-in) authenticates its users itself and names one per request in
+ * `X-AC-Act-As: <email>`. The request then runs as that member: their role, their sessions, their linked
+ * identities, the webchat conversations they own. Only a `full` service-account key listed in
+ * `ACT_AS_KEY_IDS` may do this, so the grant is an operator decision, never something a key holder gains.
+ * The resolver maps the email to a member of the key's organization, or null when there is none (a
+ * service account, an unknown address, a synthetic placeholder email).
+ */
+export const ACT_AS_HEADER = 'x-ac-act-as'
+export type ResolveActAs = (orgId: string, email: string) => Promise<{ userId: string; oidcSubject?: string } | null>
+
 /** Registration options: the config plus the optional JIT resolver + API-key verifier. */
 export type HumanAuthOptions = HumanAuthConfig & {
   resolveUser?: ResolveOidcUser
   verifyApiKey?: VerifyApiKey
+  resolveActAs?: ResolveActAs
   principalExists?: PrincipalExists
   deletedIdentities?: DeletedIdentityStore
   ensureIdentityFresh?: EnsureIdentityFresh
@@ -155,8 +170,8 @@ declare module 'fastify' {
   }
   interface FastifyRequest {
     principal?: HumanPrincipal
-    /** The verified OIDC `sub` behind this request. Set only on the real-OIDC path
-     *  (never devAuth or an API key). Routes use it to confirm the caller is who
+    /** The verified OIDC `sub` behind this request. Set on the real-OIDC path and for a
+     *  key acting as a member (never devAuth or a plain API key). Routes use it to confirm the caller is who
      *  the client thought it was, or to address the CALLER'S OWN provider record
      *  (Logto reads: profile identities, the viewer identity set) — never to look
      *  up anyone else. */
@@ -166,6 +181,9 @@ declare module 'fastify' {
      *  org-scope guard asserts this equals the URL org, so a key acts only in its org. */
     apiKeyId?: string
     apiKeyOrgId?: string
+    /** Set when a service-account key acts as the member in `req.principal` (Acting as a member): the
+     *  service account's own user id, for audit lines that must name who really called. */
+    actingAsFromUserId?: string
     /** The authenticating key's granted scopes. EMPTY = unrestricted (personal key);
      *  non-empty = confined (an OAuth token: `mcp:read`/`mcp:write`) — the org-scope
      *  guard blocks org-resource writes without `mcp:write` (agent-assistant.md §6.3). */
@@ -492,7 +510,8 @@ function bearerApiKey(header: string | undefined): string | null {
 function withApiKeyAuth(
   verify: VerifyApiKey,
   base: preHandlerHookHandler,
-  ensureIdentityFresh?: EnsureIdentityFresh
+  ensureIdentityFresh?: EnsureIdentityFresh,
+  actAs?: { keyIds: readonly string[]; resolve?: ResolveActAs }
 ): preHandlerHookHandler {
   // Our dev/oidc handlers are async 2-arg preHandlers (Fastify awaits them, never
   // passing `done`); call `base` through that shape rather than the 3-arg hook type.
@@ -532,9 +551,48 @@ function withApiKeyAuth(
     if (isAgentLevelPermission(resolved.permission) && agentId && !selectionCovers(resolved.selection, agentId)) {
       return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
     }
+    // Acting as a member: the header names who the request runs as; the key only proves the caller may ask.
+    const rawActAs = req.headers[ACT_AS_HEADER]
+    const actAsEmail = (Array.isArray(rawActAs) ? rawActAs[0] : rawActAs)?.trim().toLowerCase()
+    let principal: HumanPrincipal = { userId: resolved.userId }
+    let oidcSubject: string | undefined
+    if (actAsEmail) {
+      // A `full` personal key without scopes: an OAuth token or a narrowed key never acts for someone else,
+      // and a key outside the operator's list is refused even when its holder is an owner.
+      if (
+        !actAs?.resolve ||
+        !actAs.keyIds.includes(resolved.apiKeyId) ||
+        resolved.permission !== 'full' ||
+        resolved.scopes.length > 0
+      ) {
+        return reply
+          .code(403)
+          .send({ error: 'Forbidden', statusCode: 403, message: 'this key may not act as a member' })
+      }
+      let member: Awaited<ReturnType<ResolveActAs>>
+      try {
+        member = await actAs.resolve(resolved.orgId, actAsEmail)
+      } catch (err) {
+        req.log.error({ err }, 'humanAuth: act-as member lookup errored')
+        return reply
+          .code(503)
+          .send({ error: 'Service Unavailable', statusCode: 503, message: 'temporarily unavailable' })
+      }
+      // 403, not 404: the caller may not learn from this route whether an address is a member.
+      if (!member) {
+        return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot act as that member' })
+      }
+      principal = { userId: member.userId, email: actAsEmail }
+      oidcSubject = member.oidcSubject
+      req.actingAsFromUserId = resolved.userId
+      req.log.info({ apiKeyId: resolved.apiKeyId, userId: member.userId }, 'humanAuth: key acting as a member')
+    }
     // Identity only (like the OIDC path); the org the key is bound to is stashed so
     // the org-scope guard can assert the URL org matches — a key acts ONLY in its org.
-    req.principal = { userId: resolved.userId }
+    req.principal = principal
+    // The member's own provider record, so session access resolves THEIR linked identities (the viewer
+    // identity set), exactly as on the OIDC path; a plain key request keeps no subject.
+    if (oidcSubject) req.oidcSubject = oidcSubject
     req.apiKeyId = resolved.apiKeyId
     req.apiKeyOrgId = resolved.orgId
     req.apiKeyScopes = resolved.scopes
@@ -544,7 +602,7 @@ function withApiKeyAuth(
     // request can BE `/sessions`, so the warm fires here too; the trigger resolves the
     // sub itself. Contained — it must never fail an authenticated request.
     try {
-      ensureIdentityFresh?.({ userId: resolved.userId })
+      ensureIdentityFresh?.({ userId: principal.userId, ...(oidcSubject ? { oidcSubject } : {}) })
     } catch (warmErr) {
       req.log.debug({ err: warmErr }, 'humanAuth: identity warm trigger failed')
     }
@@ -575,7 +633,12 @@ export const humanAuthPlugin = fp(
   function humanAuthPlugin(app: FastifyInstance, cfg: HumanAuthOptions, done: (err?: Error) => void) {
     const realOidc = cfg.OIDC_ISSUER ? oidcAuth({ ...cfg, OIDC_ISSUER: cfg.OIDC_ISSUER }) : undefined
     const base = realOidc ?? devAuth(cfg, app.log)
-    const externalHandler = cfg.verifyApiKey ? withApiKeyAuth(cfg.verifyApiKey, base, cfg.ensureIdentityFresh) : base
+    const externalHandler = cfg.verifyApiKey
+      ? withApiKeyAuth(cfg.verifyApiKey, base, cfg.ensureIdentityFresh, {
+          keyIds: cfg.ACT_AS_KEY_IDS ?? [],
+          resolve: cfg.resolveActAs
+        })
+      : base
     const handler = cfg.internalInvocationAuth
       ? withInternalInvocationAuth(cfg.internalInvocationAuth, externalHandler)
       : externalHandler
@@ -586,6 +649,7 @@ export const humanAuthPlugin = fp(
     app.decorateRequest('principal', undefined)
     app.decorateRequest('apiKeyId', undefined)
     app.decorateRequest('apiKeyOrgId', undefined)
+    app.decorateRequest('actingAsFromUserId', undefined)
     app.decorateRequest('apiKeyScopes', undefined)
     app.decorateRequest('apiKeyPermission', undefined)
     app.decorateRequest('apiKeyAgentSelection', undefined)

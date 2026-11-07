@@ -398,6 +398,53 @@ never have to exclude it.
 Not in v1: a disabled state, seat accounting, and a distinct audit actor type.
 An audit row names a service account the way it names any user.
 
+### Acting as a member
+
+**Status:** Implemented.
+
+A server the organization runs may front AgentConnect for people who are
+signed in to it but not to the console: a chat widget inside another product,
+or a bridge from another identity provider. It authenticates its users itself
+and needs each request to run as that person, not as the server: their role,
+the sessions they may see and continue, their linked chat identities, the
+webchat conversations they own. A service account cannot stand in for them:
+session visibility follows identity, not role, so a DM or a channel session
+stays hidden from any account that is not its member
+([session-visibility.md](session-visibility.md)).
+
+The server sends its service-account key with one extra header:
+
+    Authorization: Bearer <service-account key>
+    X-AC-Act-As: joeri@example.com
+
+The request then authenticates as that member. `req.principal` is the member,
+`req.oidcSubject` is their subject (so the viewer identity set resolves their
+Slack, Feishu and GitHub links exactly as on a sign-in), and the org-scope guard
+reads their role. `req.apiKeyId` stays the service account's key and
+`req.actingAsFromUserId` records the service account, so an audit line can name
+both. The member list, session reads, webchat token mints and continuations
+need no change: they see a member.
+
+- **Who may.** The key must be listed in `ACT_AS_KEY_IDS`, a comma-separated
+  list of key ids in the control plane's environment, so the grant is an
+  operator decision made outside the console; a key's holder never gains it
+  by role. The key must be `full` and carry no scopes: a narrowed key or an
+  OAuth token is refused with 403 `this key may not act as a member`, as is
+  any key outside the list.
+- **Who it reaches.** The email must match a member of the key's own
+  organization, compared case-insensitively against the member list, which
+  omits service accounts; a synthetic placeholder address never matches. No
+  match answers 403 `cannot act as that member` rather than 404, so the route
+  does not reveal who is a member. A member who has not signed in yet has no
+  subject: the request still runs as them, with no linked identities.
+- **What stays closed.** `interactiveOnly` routes (keys, grants, members,
+  organizations) refuse every key, acting or not. A key acts only in its own
+  organization, as before.
+- **Security.** The header is trusted on the strength of the key alone, so
+  that key is as sensitive as every member's sign-in combined: keep it in a
+  secret store on the server that verifies the users, never in a browser, and
+  put nothing else on the list.
+
 Tests should cover:
 
 - a service account's `full` key admitted on an org route, and refused on
