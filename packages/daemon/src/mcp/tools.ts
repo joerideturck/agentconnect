@@ -12,6 +12,7 @@ import {
 import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
 import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
 import { RECALL_TOOL } from './recall-tool.js'
+import { SESSION_LINK_TOOL } from './session-link-tool.js'
 import { FOLLOW_UP_TOOL, PROPOSE_TOOL, RECORD_CHECK_TOOL } from './ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
 import { LIST_TASKS_TOOL, READ_TASK_TOOL, STOP_TASK_TOOL, UPDATE_TASK_TOOL } from './ops/assistant-subsessions.js'
@@ -1159,6 +1160,7 @@ export const ALL_TOOL_NAMES = [
       ...CODE_HOST_EFFECT_TOOLS,
       ...CODE_HOST_RESEARCH_TOOLS,
       RECALL_TOOL,
+      SESSION_LINK_TOOL,
       FOLLOW_UP_TOOL,
       GETTING_TO_KNOW_TOOL,
       RECORD_CHECK_TOOL,
@@ -1213,6 +1215,8 @@ export function toolsForIntegrations(
   add(reach === 'delegate' ? COLLABORATION_TOOLS : collaborationTools(false))
   // Every agent's cross-place recall, under the read rule (assistant-mode.md §5.4 ③, §5.5).
   add([RECALL_TOOL])
+  // This session's own id and console link, for every agent: the daemon already knows both.
+  add([SESSION_LINK_TOOL])
   // `sendMessage` and its guide are ALWAYS present: postless calls, tasks and origin replies need no platform (send-message-guide.md §3.2).
   const platforms = [...new Set(integrations.map((i) => i.platform))]
   add([buildSendMessageTool(platforms, reach), GET_TOOL_GUIDE_TOOL])

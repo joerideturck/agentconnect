@@ -55,8 +55,33 @@ export interface SessionStatusResult {
   updatedAt?: number
 }
 
-/** The session-lifecycle deps: read the progress of a session this one started. */
+/** `sessionLink` arguments: none. The session is the trusted caller's own. */
+export const SESSION_LINK_ARGS = z.object({}).strict()
+
+/** A trusted request for the calling session's own outward id and console link; every field comes from
+ *  the {@link SessionContext}, never from tool input. */
+export interface SessionLinkReq {
+  callerAgentId: string
+  platform: string
+  callerChannel: string
+  callerThread: string
+  callerTransportScope?: string
+  integrationId?: string
+}
+
+export interface SessionLinkResult {
+  /** The OUTWARD session id, the one console URLs and the control plane carry. */
+  sessionId: string
+  /** The console deep link to this session. */
+  url: string
+}
+
+/** The session-lifecycle deps: read the progress of a session this one started, and name this one. */
 export interface SessionOpsDeps {
+  /** This session's own outward id and console link (backs `sessionLink`). Null while the session has
+   *  no stored row yet, which a turn's first moments can see. Absent in the chat CLI / tests with no
+   *  daemon ⇒ the tool reports that the link is unavailable. */
+  sessionLink?: (req: SessionLinkReq) => Promise<SessionLinkResult | null>
   /** Read the progress of a session the caller started (backs `viewSessionStatus`). The daemon
    *  fills the trusted caller identity from the session context and authorizes `sessionId`
    *  against the caller's own children, fail-closed. Returns null when the id is unknown or is
@@ -64,6 +89,25 @@ export interface SessionOpsDeps {
    *  cannot probe for the existence of sessions it may not read. Absent in the chat CLI / tests
    *  with no daemon ⇒ the tool reports that status is unavailable. */
   viewSessionStatus?: (req: SessionStatusReq) => Promise<SessionStatusResult | null>
+}
+
+export async function sessionLink(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: SessionOpsDeps
+): Promise<unknown> {
+  parseArgs(SESSION_LINK_ARGS, args)
+  if (!deps.sessionLink) throw new Error('the session link is unavailable on this daemon')
+  const link = await deps.sessionLink({
+    callerAgentId: ctx.agentId,
+    platform: ctx.platform,
+    callerChannel: ctx.channel,
+    callerThread: ctx.thread,
+    ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
+    ...(ctx.integrationId !== undefined ? { integrationId: ctx.integrationId } : {})
+  })
+  if (!link) throw new Error('sessionLink: this session has no id yet; try again after this turn')
+  return link
 }
 
 export async function viewSessionStatus(

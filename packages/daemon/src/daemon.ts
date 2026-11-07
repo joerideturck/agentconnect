@@ -5150,6 +5150,21 @@ export class Daemon {
       coordinatorDecision: (ctx, args) => this.coordinators.decide(ctx, args),
       coordinatorMessage: (ctx, messageId) => this.coordinators.messageFor(ctx, messageId),
       viewSessionStatus: (req) => Promise.resolve(this.collab.viewSessionStatus(req)),
+      sessionLink: async (req) => {
+        const key = sessionKey(
+          req.platform,
+          req.callerChannel,
+          req.callerThread,
+          req.callerAgentId,
+          req.callerTransportScope
+        )
+        const rec = await this.store.getSession(key)
+        if (!rec?.sessionId) return null
+        return {
+          sessionId: rec.sessionId,
+          url: this.sessionLink(rec.sessionId, this.sessionLinkSource(req.platform, req.integrationId))
+        }
+      },
       rootPostRelation: (req) => this.collab.rootPostRelation(req),
       spawnChannelRootSession: (req) => this.collab.spawnChannelRootSession(req),
       submitCodeReview: (req) => this.codeReviews.submit(req),

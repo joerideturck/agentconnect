@@ -439,6 +439,11 @@ type ReplyTarget = { messageId: string }
   that sent it (section 5). It never names a session.
 - An unknown, foreign, or unowned id is refused in words that reveal nothing about other
   sessions; an agent cannot inject into an arbitrary session.
+- `sessionLink` (no arguments) returns the calling session's own outward id and console
+  link, read from the trusted session context and the daemon's session row, never from
+  model input. It lets an agent hand people a link that opens or continues the current
+  conversation elsewhere, such as the console session page or an app that takes the id in
+  its URL. It names no other session: addressing another one stays with the targets above.
 
 ### 3.3 Discrimination and invariants
 
