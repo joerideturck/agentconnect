@@ -2614,9 +2614,11 @@ export class Daemon {
   // admission and root deletion, keeping a stale CP replica out of the offline
   // effective roster until authoritative removal or re-add converges.
   private removedAgentTombstones = new Set<string>()
-  // Pause/loop interruption keeps an agent-level admission gate latched until every
-  // targeted turn has fully unwound (including cancel backstops). This prevents a
-  // quick reset or another-thread message from starting work an old backstop could kill.
+  // An interruption keeps an admission gate latched until every targeted turn has fully
+  // unwound (including cancel backstops), so a quick reset or another message cannot start
+  // work an old backstop could kill. An agent-wide interrupt (pause, removal, respawn,
+  // handover) gates the whole agent; a per-session one (cancel, !stop, loop breaker,
+  // integration removal) gates only the hosts it is stopping (safetyDrainHosts).
   private safetyDrainingAgents = new Set<string>()
   private safetyDrainWaits = new Map<string, Set<Promise<void>>>()
   private safetyDrainRuns = new Map<string, symbol>()
@@ -21858,7 +21860,10 @@ export class Daemon {
 
   /** {@link safetyDrainBlocksHost} for the host a logical session runs on. */
   private safetyDrainBlocks(agentId: string, sessionKey: string): boolean {
-    return this.safetyDrainBlocksHost(agentId, this.hostKeyFor(agentId, sessionKey))
+    return (
+      this.safetyDrainingAgents.has(agentId) &&
+      this.safetyDrainBlocksHost(agentId, this.hostKeyFor(agentId, sessionKey))
+    )
   }
 
   private addSafetyDrainWait(agentId: string, wait: Promise<void>): void {
