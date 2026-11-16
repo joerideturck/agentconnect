@@ -2622,6 +2622,9 @@ export class Daemon {
   private safetyDrainRuns = new Map<string, symbol>()
   private safetyDrainAdmissionKeys = new Map<string, Set<string>>()
   private safetyDrainReviewLanes = new Map<string, Set<string>>()
+  // The hosts a conversation-scoped drain is stopping. A backstop kills only those, so a session
+  // on a host of its own keeps admitting work; no entry while draining means the drain is agent-wide.
+  private safetyDrainHosts = new Map<string, Set<HostKey>>()
   // Cold-move staging is distinct from an ordinary agent/stop gate: staged
   // agents are excluded from the effective roster, so restoring an old archive
   // during bootstrap cannot reopen stale platform credentials before activate
@@ -21424,11 +21427,12 @@ export class Daemon {
           resolve(null)
           return
         }
-        // An interrupt's force backstop is host-wide, so fresh work must wait until the
-        // selected old dispatches fully unwind. Live platform arrivals are intentionally
+        // An interrupt's force backstop kills the whole host it targets, so fresh work on that
+        // host must wait until the selected old dispatches fully unwind; a session on a host of
+        // its own is not on it and runs as usual. Live platform arrivals are intentionally
         // dropped; a DURABLE startup replay cannot be lost/dormant, so retry that same row
         // after the transient drain closes (its inbox id has not been adopted yet).
-        if (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, reviewLane)) {
+        if (this.safetyDrainBlocks(agentId, key) && !this.safetyDrainAllows(agentId, key, reviewLane)) {
           if (opts?.fromInboxReplay) {
             void this.waitForSafetyDrain(agentId)
               .then(async () => {
@@ -21523,7 +21527,7 @@ export class Daemon {
           ...(opts?.fromInboxReplay ? { fromInboxReplay: true } : {}),
           ...(githubReply ? { githubReply } : {}),
           ...(posterPublishState ? { posterPublishState } : {}),
-          ...(this.safetyDrainingAgents.has(agentId) && !safetyDrainByKey
+          ...(this.safetyDrainBlocks(agentId, key) && !safetyDrainByKey
             ? { coordinationWait: this.waitForSafetyDrain(agentId) }
             : {}),
           resolve,
@@ -21804,6 +21808,13 @@ export class Daemon {
             .map((key) => this.activeDispatchDoneByKey.get(key))
             .filter((done): done is Promise<void> => done !== undefined)
     if (selected.length === 0) return
+    // An agent-wide drain stays agent-wide; a scoped one gates the hosts its keys run on.
+    if (keys === undefined) this.safetyDrainHosts.delete(agentId)
+    else if (!this.safetyDrainingAgents.has(agentId) || this.safetyDrainHosts.has(agentId)) {
+      const hosts = this.safetyDrainHosts.get(agentId) ?? new Set<HostKey>()
+      for (const key of keys) hosts.add(this.hostKeyFor(agentId, key))
+      this.safetyDrainHosts.set(agentId, hosts)
+    }
     this.intersectSafetyDrainAdmissions(this.safetyDrainAdmissionKeys, agentId, admissionKeys)
     this.intersectSafetyDrainAdmissions(this.safetyDrainReviewLanes, agentId, admissionReviewLanes)
     const waits = this.safetyDrainWaits.get(agentId) ?? new Set<Promise<void>>()
@@ -21831,9 +21842,23 @@ export class Daemon {
         this.safetyDrainingAgents.delete(agentId)
         this.safetyDrainAdmissionKeys.delete(agentId)
         this.safetyDrainReviewLanes.delete(agentId)
+        this.safetyDrainHosts.delete(agentId)
         this.log.info(`${reason}: interrupted turns fully stopped for agent "${agentId}"`)
       }
     })()
+  }
+
+  /** Whether a safety drain gates work on this host: an agent-wide drain gates every host, a scoped
+   *  one the hosts it is stopping, and every host when one of those is the agent's shared host. */
+  private safetyDrainBlocksHost(agentId: string, host: HostKey): boolean {
+    if (!this.safetyDrainingAgents.has(agentId)) return false
+    const hosts = this.safetyDrainHosts.get(agentId)
+    return hosts === undefined || hosts.has(host) || hosts.has(agentHostKey(agentId))
+  }
+
+  /** {@link safetyDrainBlocksHost} for the host a logical session runs on. */
+  private safetyDrainBlocks(agentId: string, sessionKey: string): boolean {
+    return this.safetyDrainBlocksHost(agentId, this.hostKeyFor(agentId, sessionKey))
   }
 
   private addSafetyDrainWait(agentId: string, wait: Promise<void>): void {
@@ -27744,7 +27769,7 @@ export class Daemon {
       // Already-admitted work in another logical session may keep using the warm
       // host while a conversation-scoped interrupt drains. It may not allocate a
       // replacement after that host/start generation has been evicted.
-      if (this.safetyDrainingAgents.has(agentId) && !this.hostStarts.has(key)) {
+      if (this.safetyDrainBlocksHost(agentId, key) && !this.hostStarts.has(key)) {
         throw new Error(`host start blocked while interrupted turns are stopping (${label})`)
       }
       if (!opts.allowAgentDrain && this.drainingAgents.has(agentId)) {
@@ -32614,7 +32639,7 @@ export class Daemon {
       this.draining ||
       this.drainingAgents.has(agentId) ||
       this.paused(agentId) ||
-      (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, safetyReviewLane))
+      (this.safetyDrainBlocks(agentId, key) && !this.safetyDrainAllows(agentId, key, safetyReviewLane))
     ) {
       this.log.info(`${label}: skipped for agent "${agentId}" (paused or draining)`)
       return { message: null, postAttempted: false }
