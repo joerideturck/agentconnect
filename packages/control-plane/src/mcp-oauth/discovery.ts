@@ -319,14 +319,13 @@ export function issuerEquivalent(advertised: string, expected: string): boolean 
   return a.origin === b.origin && a.origin !== 'null'
 }
 
-function readAuthServer(json: unknown, expectedIssuer: string): AuthServerMetadata | 'mismatch' | null {
+function readAuthServer(json: unknown): AuthServerMetadata | null {
   if (typeof json !== 'object' || json === null) return null
   const doc = json as Record<string, unknown>
   const issuer = str(doc.issuer)
   const authorizationEndpoint = str(doc.authorization_endpoint)
   const tokenEndpoint = str(doc.token_endpoint)
   if (issuer === undefined || authorizationEndpoint === undefined || tokenEndpoint === undefined) return null
-  if (!issuerEquivalent(issuer, expectedIssuer)) return 'mismatch'
   const registration = str(doc.registration_endpoint)
   const scopes = strArray(doc.scopes_supported)
   const methods = strArray(doc.code_challenge_methods_supported)
@@ -347,11 +346,24 @@ function readAuthServer(json: unknown, expectedIssuer: string): AuthServerMetada
 }
 
 /**
- * Fetch the authorization server's metadata, trying the spec's URL order. An issuer that
- * answers with somebody else's `issuer` is a mix-up attempt and ends discovery — it is not
- * a reason to keep trying the remaining URLs.
+ * Fetch the authorization server's metadata, trying the spec's URL order. A document that
+ * answers with somebody else's `issuer` ends the search — it is not a reason to keep trying
+ * the remaining URLs.
+ *
+ * Such a document is accepted in one case only: the issuer it names publishes its own
+ * metadata, under its own well-known URL and with its own `issuer`, listing the same
+ * authorization and token endpoints. Some resource servers advertise themselves as the
+ * authorization server and serve a copy of the real one's metadata, adding a registration
+ * endpoint of their own (Juro's MCP server does). The copy is kept, registration endpoint
+ * included: its issuer and the endpoints that see the user's grant and the code are the ones
+ * the named issuer vouches for, and the resource could name that issuer directly anyway.
+ * One hop only: the named issuer's own document must match exactly.
  */
-export async function discoverAuthServer(dial: Dial, issuer: string): Promise<Discovered<AuthServerMetadata>> {
+export async function discoverAuthServer(
+  dial: Dial,
+  issuer: string,
+  followNamedIssuer = true
+): Promise<Discovered<AuthServerMetadata>> {
   let urls: string[]
   try {
     urls = authServerMetadataUrls(issuer)
@@ -366,10 +378,20 @@ export async function discoverAuthServer(dial: Dial, issuer: string): Promise<Di
       continue
     }
     if (result.response.status !== 200) continue
-    const doc = readAuthServer(result.response.json, issuer)
-    if (doc === 'mismatch') return { ok: false, failure: 'issuer_mismatch' }
+    const doc = readAuthServer(result.response.json)
     if (doc === null) return { ok: false, failure: 'discovery_malformed' }
-    return { ok: true, value: doc }
+    if (issuerEquivalent(doc.issuer, issuer)) return { ok: true, value: doc }
+    if (followNamedIssuer) {
+      const named = await discoverAuthServer(dial, doc.issuer, false)
+      if (
+        named.ok &&
+        named.value.authorizationEndpoint === doc.authorizationEndpoint &&
+        named.value.tokenEndpoint === doc.tokenEndpoint
+      ) {
+        return { ok: true, value: doc }
+      }
+    }
+    return { ok: false, failure: 'issuer_mismatch' }
   }
   return { ok: false, failure: sawUnreachable ? 'discovery_unreachable' : 'discovery_malformed' }
 }
