@@ -5,6 +5,7 @@ import type { ExecutorPrepareResult, ExecutorReleaseResult } from '@agentconnect
 import type { LaunchTimer } from '../metrics/cluster-metrics.js'
 import type { Launch } from '../remote/launch-registry.js'
 import type { ShimEndpoint, ShimEndpointProvider } from '../remote/shim-endpoint.js'
+import { IDLE_LINGER_MS } from './executor-facet.js'
 import { dialPipe } from './executor-pipe.js'
 import { executorLost, type PlacementChoice } from './executor-placement.js'
 
@@ -22,6 +23,8 @@ export interface ExecutorLaunch extends Launch {
   /** The uuid naming this launch: a resend carries the same one, a new launch a new one (§6). */
   launchId: string
   ready?: ExecutorReady
+  /** When `ready` arrived: past the executor's idle linger, the environment it names may be gone. */
+  readyAt?: number
 }
 
 /** A turn's launch could not be prepared. Retryable by nature: the environment is one `prepare` away once whatever refused it stops refusing. */
@@ -71,7 +74,9 @@ export class ExecutorEndpoints implements ShimEndpointProvider<ExecutorLaunch> {
 
   /** Prepare this launch's environment if it is not prepared already, and say where its pipe is. */
   async resolve(launch: ExecutorLaunch, timer?: LaunchTimer): Promise<ShimEndpoint> {
-    const ready = launch.ready ?? (await this.prepareLaunch(launch))
+    // Older than the executor's idle linger, the answer may name an environment it stopped: ask again, which costs one round trip while it lives.
+    const fresh = launch.ready && this.deps.now() - (launch.readyAt ?? 0) < IDLE_LINGER_MS ? launch.ready : undefined
+    const ready = fresh ?? (await this.prepareLaunch(launch))
     timer?.mark('pod_ready')
     // The name is the leaf, and the proof is the pipe: the dial below crosses one the executor keyed for this session alone (§6).
     return { address: `ws://${pipeAuthority(ready)}`, peer: { name: launch.leaf, proof: 'executor' } }
@@ -100,6 +105,7 @@ export class ExecutorEndpoints implements ShimEndpointProvider<ExecutorLaunch> {
         // The binder binds at whatever the provider resolved, so the executor's number lands here and nowhere else.
         launch.generation = result.generation
         launch.ready = result
+        launch.readyAt = this.deps.now()
         return result
       }
       if (result.status === 'full') {
