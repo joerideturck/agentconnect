@@ -290,7 +290,63 @@ describe('discoverAuthServer', () => {
       'https://auth.example.test/.well-known/openid-configuration': ok(200, AS_DOC)
     })
     expect(await discoverAuthServer(dial, ISSUER)).toEqual({ ok: false, failure: 'issuer_mismatch' })
-    expect(dial.tried).toHaveLength(1)
+    expect(dial.tried).not.toContain('https://auth.example.test/.well-known/openid-configuration')
+  })
+
+  it('follows a copied document to the issuer it names when that issuer publishes the same endpoints', async () => {
+    // Juro's shape: the MCP server names itself as the AS and serves the real AS's metadata.
+    const advertised = 'https://mcp.example.test/mcp'
+    // Its registration endpoint lives on the MCP host and is missing from the real AS's own copy.
+    const { registration_endpoint: _omitted, ...ownDoc } = AS_DOC
+    const dial = fakeDial({
+      'https://mcp.example.test/.well-known/oauth-authorization-server/mcp': ok(200, {
+        ...AS_DOC,
+        registration_endpoint: 'https://mcp.example.test/mcp/register'
+      }),
+      'https://auth.example.test/.well-known/oauth-authorization-server': ok(200, ownDoc)
+    })
+    const result = await discoverAuthServer(dial, advertised)
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        issuer: ISSUER,
+        tokenEndpoint: `${ISSUER}/token`,
+        registrationEndpoint: 'https://mcp.example.test/mcp/register'
+      }
+    })
+  })
+
+  it('rejects a copied document when the named issuer lists other endpoints', async () => {
+    const dial = fakeDial({
+      'https://mcp.example.test/.well-known/oauth-authorization-server/mcp': ok(200, {
+        ...AS_DOC,
+        token_endpoint: 'https://mcp.example.test/token'
+      }),
+      'https://auth.example.test/.well-known/oauth-authorization-server': ok(200, AS_DOC)
+    })
+    expect(await discoverAuthServer(dial, 'https://mcp.example.test/mcp')).toEqual({
+      ok: false,
+      failure: 'issuer_mismatch'
+    })
+  })
+
+  it('follows a named issuer one hop only', async () => {
+    const dial = fakeDial({
+      'https://mcp.example.test/.well-known/oauth-authorization-server/mcp': ok(200, AS_DOC),
+      'https://auth.example.test/.well-known/oauth-authorization-server': ok(200, {
+        ...AS_DOC,
+        issuer: 'https://third.example.test'
+      }),
+      'https://third.example.test/.well-known/oauth-authorization-server': ok(200, {
+        ...AS_DOC,
+        issuer: 'https://third.example.test'
+      })
+    })
+    expect(await discoverAuthServer(dial, 'https://mcp.example.test/mcp')).toEqual({
+      ok: false,
+      failure: 'issuer_mismatch'
+    })
+    expect(dial.tried).not.toContain('https://third.example.test/.well-known/oauth-authorization-server')
   })
 
   it('accepts a path-less issuer that differs only by its trailing slash (Google spells the two differently)', async () => {
