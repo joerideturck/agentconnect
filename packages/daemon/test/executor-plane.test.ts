@@ -8,6 +8,8 @@ import {
   ExecutorPlane,
   type ExecutorPlaneDeps
 } from '../src/execution/executor-plane.js'
+import { ExecutorEndpoints, type ExecutorLaunch } from '../src/execution/executor-endpoint.js'
+import { IDLE_LINGER_MS } from '../src/execution/executor-facet.js'
 import type { PlacementChoice } from '../src/execution/executor-placement.js'
 import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
 import { cwdWorkspaceIncarnation } from '../src/skills/workspace-incarnation.js'
@@ -141,6 +143,35 @@ describe('a launch the executor has retired', () => {
     expect(sent[0]!.launchId).not.toBe(sent[1]!.launchId)
     expect(sent[1]!.launchId).toMatch(UUID)
     expect(executor.shimGenerationFor(SUBJECT)).toBe(9)
+  })
+})
+
+describe('a prepared answer the executor may have let go', () => {
+  it('is asked for again once older than the executor idle linger, under the same launch', async () => {
+    let now = 0
+    const prepare = vi.fn(async () => ready(2))
+    const endpoints = new ExecutorEndpoints({ prepare, relocate: async () => undefined, now: () => now, log: quiet })
+    const launch: ExecutorLaunch = {
+      subject: SUBJECT,
+      agentId: AGENT,
+      sandboxUid: 'launch-1',
+      generation: 0,
+      since: 0,
+      leaf: LEAF,
+      sessionKey: KEY,
+      executorDaemonId: HOST.daemonId,
+      strategy: 'host',
+      launchId: 'launch-1'
+    }
+    await endpoints.resolve(launch)
+    now += IDLE_LINGER_MS - 1
+    await endpoints.resolve(launch)
+    expect(prepare).toHaveBeenCalledTimes(1)
+    // A bind this late may find the environment stopped for want of a dial: the executor answers again, or retires the launch.
+    now += 1
+    await endpoints.resolve(launch)
+    expect(prepare).toHaveBeenCalledTimes(2)
+    expect(launch.launchId).toBe('launch-1')
   })
 })
 
