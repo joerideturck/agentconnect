@@ -770,7 +770,11 @@ with a frame in flight.
 
 **What still needs the CP, and what no longer does.** A re-dial does not, and
 neither does a second bind of the same launch, whose reply the provider keeps with
-the launch. A new launch does: birth, the wake of an environment the executor
+the launch. A bind whose kept reply is older than the executor's idle linger is the
+exception: the executor may have stopped that environment for want of a dial, and a
+dial with its key would then be refused until the turn times out. The provider asks
+again under the same launch, which answers the same key while the environment lives
+and `launch_retired` once it is gone. A new launch does: birth, the wake of an environment the executor
 stopped (§7), a successor's attach, recovery after an executor restart. A CP outage
 therefore leaves every running spread session running and makes one that needs a
 new launch wait: its turn fails retryably and nothing is lost, because the
