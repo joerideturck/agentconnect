@@ -43,7 +43,7 @@ function fakeEndpoint(): Promise<{ url: string; close: () => Promise<void> }> {
     req.on('data', (c) => (body += c))
     req.on('end', () => {
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ method: req.method, echoed: body }))
+      res.end(JSON.stringify({ method: req.method, echoed: body, userAgent: req.headers['user-agent'] }))
     })
   })
   return new Promise((resolve) => {
@@ -139,7 +139,11 @@ describe('guardedRequest', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.response.status).toBe(200)
-    expect(result.response.json).toEqual({ method: 'POST', echoed: '{"grant_type":"refresh_token"}' })
+    expect(result.response.json).toEqual({
+      method: 'POST',
+      echoed: '{"grant_type":"refresh_token"}',
+      userAgent: 'agentconnect'
+    })
   })
 
   it('hands a 3xx back as a response instead of following it past the pin', async () => {

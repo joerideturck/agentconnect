@@ -34,6 +34,8 @@ import { privateV4, privateV6 } from './private-address.js'
 /** Default ceilings. A discovery/token endpoint that needs more than this is not one. */
 export const GUARDED_TIMEOUT_MS = 10_000
 export const GUARDED_MAX_BYTES = 1024 * 1024
+/** `node:http` sends no User-Agent, and some CDNs (e.g. CloudFront rules) answer 403 without one. */
+export const GUARDED_USER_AGENT = 'agentconnect'
 
 /** Non-routable IPv4 beyond `privateV4`: IETF protocol/benchmark, multicast, reserved. */
 function unroutableV4(ip: string): boolean {
@@ -166,6 +168,7 @@ export function guardedRequest(
       {
         method: init.method ?? 'GET',
         headers: {
+          'user-agent': GUARDED_USER_AGENT,
           ...init.headers,
           ...(body === undefined ? {} : { 'content-length': Buffer.byteLength(body) })
         },
