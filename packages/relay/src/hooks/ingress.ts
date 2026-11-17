@@ -65,8 +65,7 @@ export const HOOK_BODY_EXCERPT_MAX = 64 * 1024
  * placement is checked at t=0, 1s, 4s, and 12s. */
 export const HOOK_DISPATCH_RETRY_DELAYS_MS = [0, 1_000, 3_000, 8_000] as const
 
-/** Retry cadence for a fire the daemon refused only for now: about 8 min in all, past a full shutdown
- * drain and the hand-over of the agent to the next holder, which each attempt re-reads from the rule. */
+/** Retry cadence for a fire refused only for now: about 8 min, past a full shutdown drain and the hand-over to the next holder. */
 export const HOOK_REJECTION_RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000, 60_000, 120_000, 240_000] as const
 
 /** Refusals that admitted nothing and may pass, which the daemon does not cache: the sender already has its 202 and never redelivers. */
@@ -330,9 +329,7 @@ export async function dispatchHookFire(
         return
       }
 
-      // A throw is ambiguous delivery and is never re-sent. A rejection is the daemon's
-      // verdict: final, unless it only refuses for now (draining, full), which retries
-      // on the slower rejection cadence; the daemon dedups a fire on its message id.
+      // A throw is ambiguous delivery, never re-sent; a rejection is final unless it refuses only for now.
       let ack: ReturnType<typeof conn.sendMsg>
       try {
         ack = conn.sendMsg(dispatchMsg)

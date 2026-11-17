@@ -32007,8 +32007,7 @@ export class Daemon {
     const stopFailClosed = (agentId: string, stop: Promise<void>): Promise<void> =>
       stop.catch((err) => {
         this.log.error(`shutdown: force-stop failed for agent "${agentId}": ${formatErr(err)}`)
-        // Never close the store/MCP boundary while a child that failed to stop may
-        // still be executing against it. Process termination is the final backstop.
+        // A child that failed to stop may still run against the store/MCP boundary: never close it; process exit is the backstop.
         return new Promise<void>(() => {})
       })
     const coldStops = [...coldHosts].map((host) => stopFailClosed(hostKeyAgentId(host), this.stopHostByKey(host, 0)))
