@@ -17,7 +17,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { isSyntheticEmail, type AgentRecord, type CronFailureStreak, type CronRecord } from '../../persistence/ports.js'
 import { AgentId, CronId, IntegrationId } from '../../domain/ids.js'
-import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
+import { orgOf, denyViewerWrite, denyNonOwner, ctxOf } from '../rbac.js'
 import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
@@ -113,7 +113,8 @@ export function cronRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return
+        // Only owners create, edit, run or delete crons; members and agents acting for them get a 403.
+        if (denyNonOwner(req, reply)) return
         const orgId = orgOf(req)
         // The UUID is client-minted. On an EDIT (existing row), refuse if it's
         // another org's cron OR one this caller can't see (both 404), and require
@@ -335,7 +336,8 @@ export function cronRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return
+        // Only owners create, edit, run or delete crons; members and agents acting for them get a 403.
+        if (denyNonOwner(req, reply)) return
         // "Run now" fires an agent turn — an execution-causing WRITE, so it needs
         // canEdit, not just visibility. A collaborator who can't see a restricted
         // cron 404s; one who can see but not edit it 403s.
@@ -408,7 +410,8 @@ export function cronRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return
+        // Only owners create, edit, run or delete crons; members and agents acting for them get a 403.
+        if (denyNonOwner(req, reply)) return
         const orgId = orgOf(req)
         const existing = await getOrgCron(req, req.params.id)
         if (!existing) {
