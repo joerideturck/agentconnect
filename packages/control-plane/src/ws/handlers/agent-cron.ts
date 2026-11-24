@@ -6,7 +6,8 @@ import type { Handler } from './index.js'
 
 export const handleAgentCron: Handler = async (frame, conn, deps) => {
   if (!isFrame('cron/self')(frame)) return
-  if (!deps.agentCrons) {
+  // Only organization owners schedule tasks (in the console), so an agent never manages its own crons.
+  if (!deps.agentCrons || frame.payload.op !== 'list') {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'agent cron tools are not enabled', false)
     return
   }
@@ -19,14 +20,7 @@ export const handleAgentCron: Handler = async (frame, conn, deps) => {
     return
   }
   try {
-    const p = frame.payload
-    const result =
-      p.op === 'list'
-        ? await deps.agentCrons.list(agent)
-        : p.op === 'save'
-          ? await deps.agentCrons.save(agent, p.cron)
-          : await deps.agentCrons.remove(agent, p.cronId)
-    conn.replyTo(frame, 'cron/self/result', result)
+    conn.replyTo(frame, 'cron/self/result', await deps.agentCrons.list(agent))
   } catch (error) {
     deps.log.error({ error, agentId: agent.id, op: frame.payload.op }, 'agent cron operation failed')
     conn.sendError(frame.id, 'INTERNAL', 'agent cron operation failed', true)

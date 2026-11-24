@@ -1015,9 +1015,19 @@ describe('POST /api/v1/mcp — write tools (P1, §6.2 ✎)', () => {
 
   it('upsertCron creates against an agent, edits in place, and deleteCron confirms by name', async () => {
     const app = build()
-    const { key } = await makeUserWithKey('collaborator')
+    const { key } = await makeUserWithKey('owner')
     const agentId = randomUUID()
     await seedAgent(prisma, agentId)
+
+    // Only organization owners schedule tasks: a member's upsertCron is refused.
+    const { key: memberKey } = await makeUserWithKey('collaborator')
+    const refused = await callTool(app, memberKey, 'upsertCron', {
+      agentId,
+      schedule: '0 9 * * *',
+      timezone: 'UTC',
+      trigger: 'post the digest'
+    })
+    expect(refused.isError).toBe(true)
 
     const created = await callTool(app, key, 'upsertCron', {
       agentId,
