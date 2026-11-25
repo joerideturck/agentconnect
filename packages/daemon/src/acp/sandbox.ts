@@ -327,7 +327,8 @@ export function writeSandboxSettingsUnder(trustedRoot: string, relDir: string, p
     // proxy environment remain explicit compatibility gaps in issue #312.
     network: {
       allowedDomains: [],
-      deniedDomains: [],
+      // The GCE metadata server hands out the machine's service-account tokens; no sandboxed process may reach it.
+      deniedDomains: ['169.254.169.254', 'metadata.google.internal'],
       // Linux cannot filter AF_UNIX by pathname, so an ordinary ACP host keeps
       // Unix sockets available for the parent and the model-side Git credential
       // helper; filesystem and network namespace visibility limit which host

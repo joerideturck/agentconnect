@@ -95,7 +95,13 @@ describe('sandboxWrap', () => {
         gitSafeDirectories: [workspace]
       })
       const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
-      expect(settings.network).toEqual({ allowedDomains: [], deniedDomains: [], allowAllUnixSockets: true })
+      expect(settings.network).toEqual({
+        allowedDomains: [],
+        deniedDomains: ['169.254.169.254', 'metadata.google.internal'],
+        allowAllUnixSockets: true
+      })
+      // An entry SRT rejects would refuse every sandboxed launch.
+      expect(SandboxRuntimeConfigSchema.safeParse(settings).success).toBe(true)
       expect(settings.filesystem).toMatchObject({
         denyRead: expect.arrayContaining([realpathSync(agentDir)]),
         allowWrite: [realpathSync(workspace), realpathSync(home), realpathSync(memory)],
