@@ -38,6 +38,7 @@ import type { Agent, Integration } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
 import { conversationAdmitted, integrationRouting } from '../router/routing-rule.js'
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
+import { ChannelInfoCache } from './channel-info-cache.js'
 import { SLACK_LIFECYCLE_EVENTS, slackLifecycleRevocation } from './lifecycle.js'
 import type { CredentialRevocation } from '../platforms/credential-revocation.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
@@ -465,6 +466,8 @@ export function consolidateShared(agents: Agent[]): Map<string, ConsolidatedGrou
 
 export interface SlackDeps {
   group: ConsolidatedGroup
+  /** The daemon's clock, for the conversations.info cache; absent ⇒ the wall clock. */
+  now?: () => number
   onMessage: (msg: NormalizedMessage) => void
   onAppHomeOpened?: (channel: string) => Promise<void>
   /** Fired when a user starts a new Assistant thread ("new chat") in a DM — a fresh session where the DM appends. */
@@ -1136,6 +1139,12 @@ export function slackTsToMs(ts: string | undefined): number | undefined {
   return Number(match[1]) * 1000 + Math.floor(Number(match[2]!.padEnd(6, '0')) / 1000)
 }
 
+/** The channel object conversations.info answers with. */
+type SlackConversationInfo = NonNullable<Awaited<ReturnType<App['client']['conversations']['info']>>['channel']>
+/** How long one conversations.info answer serves a channel: the minute the external-share lookup already allowed itself. */
+const CHANNEL_INFO_TTL_MS = 60_000
+const CHANNEL_INFO_REPORT_MS = 10 * 60_000
+
 export class SlackConnection implements PlatformConnection {
   private app: AppLike
   // §9.1: all outbound writes (post/update/setStatus/setTitle) funnel through one queue so
@@ -1146,7 +1155,12 @@ export class SlackConnection implements PlatformConnection {
   /** Last title written per `channel:thread` — every turn re-pushes the stored title, so
    *  unchanged repeats must not spend an API call. Grows like sessionLifecycle: unevicted. */
   private lastTitles = new Map<string, string>()
-  private readonly codeChannels = new Map<string, { at: number; value: Promise<{ code: boolean; owners: string[] }> }>()
+  /** One conversations.info answer per channel for a minute, shared by every reader of it (slack/channel-info-cache.ts). */
+  private readonly channelInfos = new ChannelInfoCache<SlackConversationInfo>(
+    CHANNEL_INFO_TTL_MS,
+    () => this.deps.now?.() ?? Date.now()
+  )
+  private channelInfosReportedAt = 0
   private readonly codeContextStatus = new Map<string, string>()
 
   // Serialize read/replace with agent context updates so neither writer erases the other's items.
@@ -1161,6 +1175,10 @@ export class SlackConnection implements PlatformConnection {
     try {
       return await this.queue.enqueue(async () => {
         if (statusKey && this.codeContextStatus.get(channel) === statusKey) return true
+        // Most channels are not this app's code channel: the shared answer says so without asking Slack on every status change.
+        const known = await this.codeChannel(channel).catch(() => undefined)
+        if (known && (!known.code || !known.owners.includes(this.botUserId))) return false
+        // A code channel's bar items are read live, so this write never replaces items set since.
         const { channel: info } = await this.app.client.conversations.info({ channel })
         const owned = slackCodeChannelInfo(info)
         if (!owned.code || !owned.owners.includes(this.botUserId)) return false
@@ -1196,20 +1214,29 @@ export class SlackConnection implements PlatformConnection {
   }
 
   async codeChannel(channel: string): Promise<{ code: boolean; owners: string[] }> {
-    const cached = this.codeChannels.get(channel)
-    if (cached && Date.now() - cached.at < 60000) return cached.value
-    const value = this.app.client.conversations
-      .info({ channel })
-      .then(({ channel: info }) => slackCodeChannelInfo(info))
-    const entry = { at: Date.now(), value }
-    if (this.codeChannels.size >= 1000) this.codeChannels.delete(this.codeChannels.keys().next().value!)
-    this.codeChannels.set(channel, entry)
-    try {
-      return await value
-    } catch (err) {
-      if (this.codeChannels.get(channel) === entry) this.codeChannels.delete(channel)
-      throw err
-    }
+    return slackCodeChannelInfo(await this.conversationInfo(channel))
+  }
+
+  /** conversations.info for one channel, answered from the shared cache while it is fresh. */
+  private async conversationInfo(channel: string): Promise<SlackConversationInfo> {
+    const info = this.channelInfos.get(
+      channel,
+      async () => (await this.app.client.conversations.info({ channel })).channel ?? {}
+    )
+    this.reportChannelInfos()
+    return await info
+  }
+
+  /** At most every ten minutes, how many conversations.info answers came from the cache and how many from Slack. */
+  private reportChannelInfos(): void {
+    const now = this.deps.now?.() ?? Date.now()
+    if (this.channelInfosReportedAt === 0) this.channelInfosReportedAt = now
+    if (now - this.channelInfosReportedAt < CHANNEL_INFO_REPORT_MS) return
+    this.channelInfosReportedAt = now
+    const { hits, misses } = this.channelInfos.takeCounts()
+    this.deps.log?.info(
+      `slack: conversations.info ${misses} call(s) to Slack, ${hits} answered from cache in the last ${Math.round(CHANNEL_INFO_REPORT_MS / 60_000)} min`
+    )
   }
 
   /** A code channel is keyed as one thread, the channel, so a root post there belongs to its session or the task holding it (slack-code-channels.md). */
@@ -2967,8 +2994,8 @@ export class SlackConnection implements PlatformConnection {
   }
 
   async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {
-    const res = await this.app.client.conversations.info({ channel })
-    const c = res.channel ?? {}
+    // `user` is set on an im ("D…") answer, which the typed Channel leaves out.
+    const c: SlackConversationInfo & { user?: string } = await this.conversationInfo(channel)
     // `user` is the DM counterpart — only set on im ("D…") conversations. `is_mpim`
     // marks a multi-person DM, which shares the "G…" id space with legacy private
     // channels and so cannot be told apart from the id alone.

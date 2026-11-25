@@ -747,7 +747,7 @@ export class ConnectionReconciler {
     else this.log.info(`slack: opening ${groups.size} socket connection(s)`)
     for (const group of groups.values()) {
       const conn: SlackConnection = new SlackConnection(
-        { group, ...this.slackSocketDeps(() => conn, group) },
+        { group, now: () => this.host.clock().now(), ...this.slackSocketDeps(() => conn, group) },
         this.host.slackAppFactory()
       )
       this.log.info(
@@ -1032,7 +1032,7 @@ export class ConnectionReconciler {
       // and leaves existing sockets intact instead of throwing out of reconcile.
       try {
         const conn: SlackConnection = new SlackConnection(
-          { group, ...this.slackSocketDeps(() => conn, group) },
+          { group, now: () => this.host.clock().now(), ...this.slackSocketDeps(() => conn, group) },
           this.host.slackAppFactory()
         )
         this.log.info(
@@ -1080,6 +1080,7 @@ export class ConnectionReconciler {
         const created: SlackConnection = new SlackConnection(
           {
             group,
+            now: () => this.host.clock().now(),
             sendOnly: true,
             newTraceId: () => randomUUID(),
             onMessage: () => {}, // never called (relay owns inbound)
@@ -1835,7 +1836,7 @@ export class ConnectionReconciler {
     // The thunk captures the NEW `conn` ref so the name resolver / onInbound use the
     // successfully-retried connection, not a stale one from an earlier attempt.
     const conn: SlackConnection = new SlackConnection(
-      { group, ...this.slackSocketDeps(() => conn, group) },
+      { group, now: () => this.host.clock().now(), ...this.slackSocketDeps(() => conn, group) },
       this.host.slackAppFactory()
     )
     try {
