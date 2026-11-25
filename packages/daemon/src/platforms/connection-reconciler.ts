@@ -671,6 +671,15 @@ export class ConnectionReconciler {
   }
 
   /** The deps every Slack SOCKET shares; `conn` is a thunk so each callback reads the connection it was built for, and `group` is the roster it opens with. */
+  /** The store's conversations.info answers, read when used: a connection may be built before the store is reachable. */
+  private sharedChannelInfos(): NonNullable<SlackDeps['channelInfos']> {
+    return {
+      get: async (teamId, channel) => await this.host.store().slackChannelInfos.get(teamId, channel),
+      put: async (teamId, channel, info, fetchedAt) =>
+        await this.host.store().slackChannelInfos.put(teamId, channel, info, fetchedAt)
+    }
+  }
+
   private slackSocketDeps(conn: () => SlackConnection, group: ConsolidatedGroup): Omit<SlackDeps, 'group'> {
     return {
       newTraceId: () => randomUUID(),
@@ -747,7 +756,12 @@ export class ConnectionReconciler {
     else this.log.info(`slack: opening ${groups.size} socket connection(s)`)
     for (const group of groups.values()) {
       const conn: SlackConnection = new SlackConnection(
-        { group, now: () => this.host.clock().now(), ...this.slackSocketDeps(() => conn, group) },
+        {
+          group,
+          now: () => this.host.clock().now(),
+          channelInfos: this.sharedChannelInfos(),
+          ...this.slackSocketDeps(() => conn, group)
+        },
         this.host.slackAppFactory()
       )
       this.log.info(
@@ -1032,7 +1046,12 @@ export class ConnectionReconciler {
       // and leaves existing sockets intact instead of throwing out of reconcile.
       try {
         const conn: SlackConnection = new SlackConnection(
-          { group, now: () => this.host.clock().now(), ...this.slackSocketDeps(() => conn, group) },
+          {
+            group,
+            now: () => this.host.clock().now(),
+            channelInfos: this.sharedChannelInfos(),
+            ...this.slackSocketDeps(() => conn, group)
+          },
           this.host.slackAppFactory()
         )
         this.log.info(
@@ -1081,6 +1100,7 @@ export class ConnectionReconciler {
           {
             group,
             now: () => this.host.clock().now(),
+            channelInfos: this.sharedChannelInfos(),
             sendOnly: true,
             newTraceId: () => randomUUID(),
             onMessage: () => {}, // never called (relay owns inbound)
@@ -1836,7 +1856,12 @@ export class ConnectionReconciler {
     // The thunk captures the NEW `conn` ref so the name resolver / onInbound use the
     // successfully-retried connection, not a stale one from an earlier attempt.
     const conn: SlackConnection = new SlackConnection(
-      { group, now: () => this.host.clock().now(), ...this.slackSocketDeps(() => conn, group) },
+      {
+        group,
+        now: () => this.host.clock().now(),
+        channelInfos: this.sharedChannelInfos(),
+        ...this.slackSocketDeps(() => conn, group)
+      },
       this.host.slackAppFactory()
     )
     try {

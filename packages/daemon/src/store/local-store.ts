@@ -24,6 +24,7 @@ import {
   WATCH_TASK_COLUMN_TYPES
 } from './assistant-watch-tasks.js'
 import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
+import { SLACK_CHANNEL_INFO_SCHEMA, SlackChannelInfos } from './slack-channel-infos.js'
 import { WORK_CANVAS_SCHEMA, WorkCanvases } from './work-canvases.js'
 import { EMAIL_MESSAGE_SCHEMA, EmailMessages } from './email-messages.js'
 import { newSessionMessageId, SESSION_MESSAGE_SCHEMA, SessionMessages } from './session-messages.js'
@@ -2995,6 +2996,7 @@ export class LocalStore {
   readonly assistantOnboarding: AssistantOnboardingLedger
   /** The time zone last seen from a person in each place, for every agent (product-conventions.md "Local time"). */
   readonly placeTimeZones: PlaceTimeZones
+  readonly slackChannelInfos: SlackChannelInfos
   /** Each channel's Work page and each targeted cron's latest anchor (assistant-mode.md §5.19). */
   readonly workCanvases: WorkCanvases
   /** The mail each agent's address received and sent, by message ID (email-integration.md §5.6). */
@@ -3047,6 +3049,7 @@ export class LocalStore {
     this.assistantReminders = new AssistantReminderLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantOnboarding = new AssistantOnboardingLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.placeTimeZones = new PlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
+    this.slackChannelInfos = new SlackChannelInfos({ query: (sql, params) => this.db.query(sql, params) })
     this.workCanvases = new WorkCanvases({ query: (sql, params) => this.db.query(sql, params) })
     this.emailMessages = new EmailMessages({ query: (sql, params) => this.db.query(sql, params) })
     this.sessionMessages = new SessionMessages({ query: (sql, params) => this.db.query(sql, params) })
@@ -3144,6 +3147,7 @@ export class LocalStore {
       ${ASSISTANT_REMINDER_SCHEMA}
       ${ASSISTANT_ONBOARDING_SCHEMA}
       ${PLACE_TIME_ZONE_SCHEMA}
+      ${SLACK_CHANNEL_INFO_SCHEMA}
       ${WORK_CANVAS_SCHEMA}
       ${EMAIL_MESSAGE_SCHEMA}
       ${SESSION_MESSAGE_SCHEMA}

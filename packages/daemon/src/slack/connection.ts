@@ -39,6 +39,7 @@ import { integrationCore, platformIntegrationConfig } from '../platforms/integra
 import { conversationAdmitted, integrationRouting } from '../router/routing-rule.js'
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
 import { ChannelInfoCache } from './channel-info-cache.js'
+import type { SlackChannelInfos } from '../store/slack-channel-infos.js'
 import { SLACK_LIFECYCLE_EVENTS, slackLifecycleRevocation } from './lifecycle.js'
 import type { CredentialRevocation } from '../platforms/credential-revocation.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
@@ -468,6 +469,8 @@ export interface SlackDeps {
   group: ConsolidatedGroup
   /** The daemon's clock, for the conversations.info cache; absent ⇒ the wall clock. */
   now?: () => number
+  /** conversations.info answers shared with every member serving the workspace (store/slack-channel-infos.ts); absent ⇒ this process only. */
+  channelInfos?: Pick<SlackChannelInfos, 'get' | 'put'>
   onMessage: (msg: NormalizedMessage) => void
   onAppHomeOpened?: (channel: string) => Promise<void>
   /** Fired when a user starts a new Assistant thread ("new chat") in a DM — a fresh session where the DM appends. */
@@ -1144,6 +1147,17 @@ type SlackConversationInfo = NonNullable<Awaited<ReturnType<App['client']['conve
 /** How long one conversations.info answer serves a channel: the minute the external-share lookup already allowed itself. */
 const CHANNEL_INFO_TTL_MS = 60_000
 const CHANNEL_INFO_REPORT_MS = 10 * 60_000
+/** How long Slack may take before a stored answer stands in: under the relay's 2 s answer deadline for a Slack event. */
+const CHANNEL_INFO_STALE_AFTER_MS = 1_500
+
+function parseStoredInfo(json: string): SlackConversationInfo | undefined {
+  try {
+    const value: unknown = JSON.parse(json)
+    return value && typeof value === 'object' ? (value as SlackConversationInfo) : undefined
+  } catch {
+    return undefined
+  }
+}
 
 export class SlackConnection implements PlatformConnection {
   private app: AppLike
@@ -1161,6 +1175,8 @@ export class SlackConnection implements PlatformConnection {
     () => this.deps.now?.() ?? Date.now()
   )
   private channelInfosReportedAt = 0
+  private channelInfoStoreHits = 0
+  private channelInfoStaleAnswers = 0
   private readonly codeContextStatus = new Map<string, string>()
 
   // Serialize read/replace with agent context updates so neither writer erases the other's items.
@@ -1219,23 +1235,59 @@ export class SlackConnection implements PlatformConnection {
 
   /** conversations.info for one channel, answered from the shared cache while it is fresh. */
   private async conversationInfo(channel: string): Promise<SlackConversationInfo> {
-    const info = this.channelInfos.get(
-      channel,
-      async () => (await this.app.client.conversations.info({ channel })).channel ?? {}
-    )
+    const info = this.channelInfos.get(channel, () => this.sharedConversationInfo(channel))
     this.reportChannelInfos()
     return await info
   }
 
-  /** At most every ten minutes, how many conversations.info answers came from the cache and how many from Slack. */
+  /**
+   * The workspace's stored answer while it is fresh; otherwise Slack, whose answer is stored for every member. A stale
+   * answer stands in when Slack is slow or refuses (a rate limit waits its retry-after inside the client), so message
+   * intake never waits on Slack for a channel it has seen before; the late answer still lands in the store.
+   */
+  private async sharedConversationInfo(channel: string): Promise<SlackConversationInfo> {
+    const store = this.deps.channelInfos
+    const team = this.teamId || 'unknown'
+    const now = this.deps.now?.() ?? Date.now()
+    const stored = store ? await store.get(team, channel).catch(() => undefined) : undefined
+    const kept = stored ? parseStoredInfo(stored.info) : undefined
+    if (kept && stored && now - stored.fetchedAt < CHANNEL_INFO_TTL_MS) {
+      this.channelInfoStoreHits += 1
+      return kept
+    }
+    const live = this.app.client.conversations.info({ channel }).then((res) => {
+      const info = res.channel ?? {}
+      void store?.put(team, channel, JSON.stringify(info), this.deps.now?.() ?? Date.now()).catch(() => undefined)
+      return info
+    })
+    if (!kept) return await live
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), CHANNEL_INFO_STALE_AFTER_MS)
+    })
+    try {
+      const answer = await Promise.race([live.catch(() => undefined), late])
+      if (answer) return answer
+      this.channelInfoStaleAnswers += 1
+      return kept
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** At most every ten minutes, where the conversations.info answers came from. */
   private reportChannelInfos(): void {
     const now = this.deps.now?.() ?? Date.now()
     if (this.channelInfosReportedAt === 0) this.channelInfosReportedAt = now
     if (now - this.channelInfosReportedAt < CHANNEL_INFO_REPORT_MS) return
     this.channelInfosReportedAt = now
     const { hits, misses } = this.channelInfos.takeCounts()
+    const shared = this.channelInfoStoreHits
+    const stale = this.channelInfoStaleAnswers
+    this.channelInfoStoreHits = 0
+    this.channelInfoStaleAnswers = 0
     this.deps.log?.info(
-      `slack: conversations.info ${misses} call(s) to Slack, ${hits} answered from cache in the last ${Math.round(CHANNEL_INFO_REPORT_MS / 60_000)} min`
+      `slack: conversations.info in the last ${Math.round(CHANNEL_INFO_REPORT_MS / 60_000)} min: ${hits} from memory, ${shared} from the shared store, ${misses - shared} asked Slack (${stale} answered stale while Slack was slow)`
     )
   }
 
