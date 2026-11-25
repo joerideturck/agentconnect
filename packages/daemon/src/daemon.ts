@@ -926,6 +926,8 @@ import {
 } from './runtimes/runtime-commands.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { runtimeCredentialsConfigured } from './runtimes/runtime-credential-discovery.js'
+import { sharedCredentialProfile } from './runtimes/runtime-credential-sources.js'
+import { lookupUserClaudeCredential } from './runtimes/user-claude-credential.js'
 import { resolveK8sPlaneSettings, startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import { ComputerPool, computerPoolSettings } from './k8s/computer-pool.js'
 import { SandboxApi } from './k8s/sandbox-api.js'
@@ -9678,13 +9680,46 @@ export class Daemon {
     return credentials
   }
 
+  /**
+   * The Claude sign-in of the Slack user who started this session, when they saved one (`QAI_CLAUDE_TOKEN_PROJECT`
+   * names the Secret Manager project; unset turns this off). Only a host of one session's own takes it, and every
+   * miss keeps this machine's sign-in. One `claude_credential` JSON line per launch records which one was used.
+   */
+  private async userClaudeToken(agent: LoadedAgent, key: HostKey): Promise<string | undefined> {
+    const project = process.env.QAI_CLAUDE_TOKEN_PROJECT
+    const sessionKey = hostKeySessionKey(key)
+    if (!project || this.k8s || sessionKey === undefined) return undefined
+    if (sharedCredentialProfile(agent.runtime, this.runtimes[agent.runtime]) !== 'claude') return undefined
+    const session = await this.store.getSession(sessionKey)
+    const slackUserId = session?.platform === 'slack' ? session.triggeredBy : undefined
+    const lookup = slackUserId
+      ? await lookupUserClaudeCredential(slackUserId, { project, now: this.clock.now() })
+      : undefined
+    const credential = lookup?.credential
+    process.stdout.write(
+      `${JSON.stringify({
+        event: 'claude_credential',
+        session_id: session?.sessionId ?? null,
+        agent_id: agent.id,
+        source: credential ? 'user' : 'daemon',
+        reason: !lookup ? 'not_slack' : lookup.credential ? null : lookup.reason,
+        email: credential?.email ?? null,
+        slack_team_id: credential?.slackTeamId ?? null,
+        slack_user_id: slackUserId ?? null,
+        expires_at: credential?.expiresAt ?? null
+      })}\n`
+    )
+    return credential?.token
+  }
+
   // Construct and memoize the host with its session workspace and launch credentials.
   private ensureHost(
     key: HostKey,
     cfg: ReturnType<typeof loadConfig>,
     cwd?: string,
     sessionGitDirs?: string[],
-    providerCredential?: ProviderCredential
+    providerCredential?: ProviderCredential,
+    userClaudeToken?: string
   ): AcpHost {
     const host = this.hosts.get(key)
     if (host) return host
@@ -9694,6 +9729,7 @@ export class Daemon {
     const built = this.buildAcpHost(agent, cfg, {
       hostKey: key,
       providerCredential,
+      ...(userClaudeToken ? { userClaudeToken } : {}),
       // A host of the session's own launches in its birth strategy; the agent's shared host, in the agent's (§5).
       strategy: this.sessionStrategy(agent, hostKeySessionKey(key)),
       cwd: launchCwd,
@@ -9744,6 +9780,8 @@ export class Daemon {
       excludeAgentToolCredentials?: boolean
       providerCredential?: ProviderCredential
       modelCredential?: { target: ModelProviderTarget; credential: ModelCredential }
+      /** The session starter's own Claude sign-in, replacing this machine's (`userClaudeToken`). */
+      userClaudeToken?: string
       /** A session whose clones are off this disk: their `.git`, as the filesystem holding them answered. */
       sessionGitDirs?: string[]
     }
@@ -9764,11 +9802,16 @@ export class Daemon {
           }))
         ]
       : []
+    const userSecrets = opts.userClaudeToken ? [{ name: 'CLAUDE_CODE_OAUTH_TOKEN', value: opts.userClaudeToken }] : []
     const secrets = maskableSecrets({
-      runtimeOverrides: { secrets: [...(agent.runtimeOverrides?.secrets ?? []), ...providerSecrets] }
+      runtimeOverrides: { secrets: [...(agent.runtimeOverrides?.secrets ?? []), ...providerSecrets, ...userSecrets] }
     })
     const onUpdate = (sid: string, u: any) =>
-      this.enqueueAcpUpdate(opts.hostKey, sid, opts.providerCredential ? maskSecretsDeep(u, secrets) : u)
+      this.enqueueAcpUpdate(
+        opts.hostKey,
+        sid,
+        opts.providerCredential || opts.userClaudeToken ? maskSecretsDeep(u, secrets) : u
+      )
     // A session placed on another machine runs inside that machine's strategy, so this one's own VM composes none of it (§7).
     const remoteSession = this.placedSession(hostKeySessionKey(opts.hostKey))
     const micro = !this.k8s && opts.strategy === 'microsandbox' && !remoteSession
@@ -10128,7 +10171,7 @@ export class Daemon {
         agentsRoot: cfg.agentsDir,
         runtimeEnv,
         agentEnv: env,
-        inheritRuntimeCredentials: !opts.providerCredential,
+        inheritRuntimeCredentials: !opts.providerCredential && !opts.userClaudeToken,
         // A dream host materializes nothing: it has no cleanup path and needs none of these secrets.
         ...(excludeAgentToolCredentials
           ? {}
@@ -10143,6 +10186,12 @@ export class Daemon {
           // Research keeps its runtime's tools under the agent's mode, the web among them, so it never gets that agent.
           if (excludeAgentToolCredentials && !research) {
             applyOpenCodeReadOnlyMode(target, launchEnv, this.k8s ? undefined : process.env.OPENCODE_CONFIG_CONTENT)
+          }
+          // Claude Code prefers an API key or bearer token over an OAuth token, so the user's sign-in drops them.
+          if (opts.userClaudeToken) {
+            delete launchEnv.ANTHROPIC_API_KEY
+            delete launchEnv.ANTHROPIC_AUTH_TOKEN
+            launchEnv.CLAUDE_CODE_OAUTH_TOKEN = opts.userClaudeToken
           }
           if (!this.k8s && opts.providerCredential && agent.modelProvider) {
             if (providerPlaceholder && localProxyRoute)
@@ -28809,13 +28858,16 @@ export class Daemon {
       }
       // Constructs + memoizes into this.hosts, in the session directory for a session-bound host.
       const providerCredential = await this.requestModelProviderCredential(agent)
+      // An organization provider key decides billing on its own; only a launch without one takes the user's sign-in.
+      const userClaudeToken = providerCredential ? undefined : await this.userClaudeToken(agent, key)
       if (this.hostStartGeneration.get(key) !== generation) throw new Error(`host start superseded for ${label}`)
       const host = this.ensureHost(
         key,
         this.cfg,
         bound ? (bound.cwd ?? prepared) : undefined,
         sessionGitDirs,
-        providerCredential
+        providerCredential,
+        userClaudeToken
       )
       try {
         await withStartupPhase('runtime', () => host.start())
