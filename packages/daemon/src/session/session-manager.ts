@@ -219,7 +219,12 @@ function abortable<T>(start: () => PromiseLike<T> | T, signal?: AbortSignal): Pr
 }
 
 /** What a logical session asks of its workspace — also what keys its host where hosts are per session. */
-export type SessionWorkspaceRequest = { sessionKey: string; isolation: 'shared' | 'session'; initiatedBy?: string }
+export type SessionWorkspaceRequest = {
+  sessionKey: string
+  isolation: 'shared' | 'session'
+  initiatedBy?: string
+  starter?: { platform: string; id: string }
+}
 
 export class SessionManager {
   /** The owning daemon's plane when it supplied one; otherwise a private plane, so two harnesses
@@ -662,7 +667,9 @@ export class SessionManager {
       : (originSessionId ?? webchatTask?.parentSessionId)
     // Names a session's branch by whoever opened it, so a shared thread keeps its owner when someone else replies.
     const initiatedBy = await sessionInitiatedBy((ids) => this.deps.store.getDisplayNames(ids), rec?.triggeredBy, msg)
-    const workspaceRequest = { sessionKey: key, isolation: workspaceIsolation, initiatedBy }
+    // Who opened the session, before its row exists: a new session's host starts first and signs in as this person when they can.
+    const starter = { platform: msg.platform, id: rec?.triggeredBy ?? msg.sessionTriggerId ?? msg.sender.id }
+    const workspaceRequest = { sessionKey: key, isolation: workspaceIsolation, initiatedBy, starter }
     // Production hostFor owns the single cold-host preparation gate before spawn.
     // After it resolves, consume that already-prepared cwd through the pure resolver.
     // Lightweight embedders without that contract retain the legacy pre-host fallback.

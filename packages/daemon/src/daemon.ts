@@ -9685,13 +9685,19 @@ export class Daemon {
    * names the Secret Manager project; unset turns this off). Only a host of one session's own takes it, and every
    * miss keeps this machine's sign-in. One `claude_credential` JSON line per launch records which one was used.
    */
-  private async userClaudeToken(agent: LoadedAgent, key: HostKey): Promise<string | undefined> {
+  private async userClaudeToken(
+    agent: LoadedAgent,
+    key: HostKey,
+    starter?: { platform: string; id: string }
+  ): Promise<string | undefined> {
     const project = process.env.QAI_CLAUDE_TOKEN_PROJECT
     const sessionKey = hostKeySessionKey(key)
     if (!project || this.k8s || sessionKey === undefined) return undefined
     if (sharedCredentialProfile(agent.runtime, this.runtimes[agent.runtime]) !== 'claude') return undefined
+    // A new session's row is written after its host starts, so its request names the starter until then.
     const session = await this.store.getSession(sessionKey)
-    const slackUserId = session?.platform === 'slack' ? session.triggeredBy : undefined
+    const opener = session ? { platform: session.platform, id: session.triggeredBy } : starter
+    const slackUserId = opener?.platform === 'slack' ? (opener.id ?? undefined) : undefined
     const lookup = slackUserId
       ? await lookupUserClaudeCredential(slackUserId, { project, now: this.clock.now() })
       : undefined
@@ -9700,6 +9706,7 @@ export class Daemon {
       `${JSON.stringify({
         event: 'claude_credential',
         session_id: session?.sessionId ?? null,
+        session_key: sessionKey,
         agent_id: agent.id,
         source: credential ? 'user' : 'daemon',
         reason: !lookup ? 'not_slack' : lookup.credential ? null : lookup.reason,
@@ -28859,7 +28866,9 @@ export class Daemon {
       // Constructs + memoizes into this.hosts, in the session directory for a session-bound host.
       const providerCredential = await this.requestModelProviderCredential(agent)
       // An organization provider key decides billing on its own; only a launch without one takes the user's sign-in.
-      const userClaudeToken = providerCredential ? undefined : await this.userClaudeToken(agent, key)
+      const userClaudeToken = providerCredential
+        ? undefined
+        : await this.userClaudeToken(agent, key, bound?.workspace.starter)
       if (this.hostStartGeneration.get(key) !== generation) throw new Error(`host start superseded for ${label}`)
       const host = this.ensureHost(
         key,
