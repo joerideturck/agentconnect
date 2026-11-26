@@ -928,7 +928,7 @@ import {
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { runtimeCredentialsConfigured } from './runtimes/runtime-credential-discovery.js'
 import { sharedCredentialProfile } from './runtimes/runtime-credential-sources.js'
-import { lookupUserClaudeCredential } from './runtimes/user-claude-credential.js'
+import { lookupUserClaudeCredential, userClaudeFallbackNotice } from './runtimes/user-claude-credential.js'
 import { resolveK8sPlaneSettings, startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import { ComputerPool, computerPoolSettings } from './k8s/computer-pool.js'
 import { SandboxApi } from './k8s/sandbox-api.js'
@@ -2491,6 +2491,8 @@ export class Daemon {
   // Monotonic per-agent fence. stop/evict increments it so an older async startup
   // (including its retry loop) can never publish or retry after teardown.
   private hostStartGeneration = new Map<HostKey, number>()
+  /** Sessions whose opener was already told they run on this machine's Claude sign-in (`userClaudeToken`). */
+  private readonly userClaudeNoticed = new Set<string>()
   /** Hosts whose initialize handshake completed for the current generation. */
   private readyHosts = new Set<HostKey>()
   // Wakes a retry that is sleeping in backoff when its generation is invalidated.
@@ -9685,7 +9687,7 @@ export class Daemon {
   private async userClaudeToken(
     agent: LoadedAgent,
     key: HostKey,
-    starter?: { platform: string; id: string }
+    starter?: { platform: string; id: string; isBot?: boolean }
   ): Promise<string | undefined> {
     const project = process.env.QAI_CLAUDE_TOKEN_PROJECT
     const sessionKey = hostKeySessionKey(key)
@@ -9713,6 +9715,20 @@ export class Daemon {
         expires_at: credential?.expiresAt ?? null
       })}\n`
     )
+    // The first launch is the one before the session row exists, so the note goes out once per session.
+    const notice = userClaudeFallbackNotice({
+      sessionKey,
+      firstLaunch: !session && !this.userClaudeNoticed.has(sessionKey),
+      starter,
+      reason: lookup?.credential ? undefined : lookup?.reason
+    })
+    if (notice) {
+      this.userClaudeNoticed.add(sessionKey)
+      const conn = this.replyConnFor(agent.id) as Partial<SlackConnection> | undefined
+      void conn
+        ?.postEphemeral?.(notice.channel, notice.user, notice.text, notice.thread)
+        ?.catch((err: unknown) => this.log.warn(`claude credential notice failed for ${sessionKey}: ${String(err)}`))
+    }
     return credential?.token
   }
 

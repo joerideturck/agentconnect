@@ -546,7 +546,7 @@ describe('SessionManager', () => {
       isolation: 'shared',
       // Names a session worktree's branch. No display name is cached for this sender, so the platform id stands in.
       initiatedBy: 'U1',
-      starter: { platform: 'slack', id: 'U1' }
+      starter: { platform: 'slack', id: 'U1', isBot: false }
     })
     await (await store).close()
   })

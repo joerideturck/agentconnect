@@ -285,7 +285,7 @@ export interface PrepareSessionWorkspaceRequest {
    * worktree's branch. Presentation only; never an identity or auth input. */
   initiatedBy?: string
   /** Platform and platform id of the user who opened this session, for their own runtime sign-in (`userClaudeToken`). */
-  starter?: { platform: string; id: string }
+  starter?: { platform: string; id: string; isBot?: boolean }
   review?: GithubReviewWorkspaceRevision
   /** `owner/repo` the review is about, only with `review`: a secondary root's exact worktree becomes the cwd, the others ride along at their default branches (decisions 5, 6); absent or the primary is the ordinary review. */
   reviewRepoFullName?: string

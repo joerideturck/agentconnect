@@ -70,3 +70,30 @@ export async function lookupUserClaudeCredential(
     return { reason: 'error' }
   }
 }
+
+export const CLAUDE_ACCOUNT_URL = 'https://qai.qargo.com/claude-account/'
+
+/** A Slack person's own ids start with U or W; a bot posting as itself has a B id. */
+const SLACK_PERSON_ID = /^[UW][A-Z0-9]+$/
+
+/**
+ * The note telling the person who opened a Slack session that it runs on the shared sign-in, or undefined
+ * when there is nothing to tell: a session already under way, a bot opener, or a miss that saving cannot fix.
+ */
+export function userClaudeFallbackNotice(opts: {
+  sessionKey: string
+  firstLaunch: boolean
+  starter?: { platform: string; id: string; isBot?: boolean }
+  reason?: 'missing' | 'expired' | 'error'
+}): { channel: string; thread: string; user: string; text: string } | undefined {
+  const { starter, reason } = opts
+  if (!opts.firstLaunch || (reason !== 'missing' && reason !== 'expired')) return undefined
+  if (starter?.platform !== 'slack' || starter.isBot !== false || !SLACK_PERSON_ID.test(starter.id)) return undefined
+  const [platform, channel, thread] = opts.sessionKey.split(':')
+  if (platform !== 'slack' || !channel || !thread) return undefined
+  const text =
+    reason === 'expired'
+      ? `Your saved Claude token has expired, so this conversation uses Qargo's shared Claude account. Go to <${CLAUDE_ACCOUNT_URL}> and follow the steps to connect it again.`
+      : `This conversation uses Qargo's shared Claude account. To have Qai use your own Claude usage instead, go to <${CLAUDE_ACCOUNT_URL}> and follow the steps.`
+  return { channel, thread, user: starter.id, text }
+}

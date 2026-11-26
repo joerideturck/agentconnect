@@ -223,7 +223,7 @@ export type SessionWorkspaceRequest = {
   sessionKey: string
   isolation: 'shared' | 'session'
   initiatedBy?: string
-  starter?: { platform: string; id: string }
+  starter?: { platform: string; id: string; isBot?: boolean }
 }
 
 export class SessionManager {
@@ -668,7 +668,13 @@ export class SessionManager {
     // Names a session's branch by whoever opened it, so a shared thread keeps its owner when someone else replies.
     const initiatedBy = await sessionInitiatedBy((ids) => this.deps.store.getDisplayNames(ids), rec?.triggeredBy, msg)
     // Who opened the session, before its row exists: a new session's host starts first and signs in as this person when they can.
-    const starter = { platform: msg.platform, id: rec?.triggeredBy ?? msg.sessionTriggerId ?? msg.sender.id }
+    const starterId = rec?.triggeredBy ?? msg.sessionTriggerId ?? msg.sender.id
+    // Whether a bot opened it is known only when this message's sender is the opener.
+    const starter = {
+      platform: msg.platform,
+      id: starterId,
+      ...(starterId === msg.sender.id ? { isBot: msg.sender.isBot } : {})
+    }
     const workspaceRequest = { sessionKey: key, isolation: workspaceIsolation, initiatedBy, starter }
     // Production hostFor owns the single cold-host preparation gate before spawn.
     // After it resolves, consume that already-prepared cwd through the pure resolver.

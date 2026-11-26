@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { lookupUserClaudeCredential, userClaudeSecretName } from '../src/runtimes/user-claude-credential.js'
+import {
+  lookupUserClaudeCredential,
+  userClaudeFallbackNotice,
+  userClaudeSecretName
+} from '../src/runtimes/user-claude-credential.js'
 
 const NOW = Date.parse('2026-11-25T12:00:00Z')
 
@@ -77,5 +81,35 @@ describe('lookupUserClaudeCredential', () => {
         reason: 'error'
       })
     }
+  })
+})
+
+describe('userClaudeFallbackNotice', () => {
+  const base = {
+    sessionKey: 'slack:C1:1795621412.679719:agent-1:slack:scope',
+    firstLaunch: true,
+    starter: { platform: 'slack', id: 'U123', isBot: false },
+    reason: 'missing' as const
+  }
+
+  it('tells the person who opened a new session where to connect', () => {
+    expect(userClaudeFallbackNotice(base)).toEqual({
+      channel: 'C1',
+      thread: '1795621412.679719',
+      user: 'U123',
+      text: expect.stringContaining('<https://qai.qargo.com/claude-account/>')
+    })
+    expect(userClaudeFallbackNotice({ ...base, reason: 'expired' })?.text).toContain('expired')
+  })
+
+  it('stays quiet for a session under way, a bot opener, an unknown opener or a lookup error', () => {
+    expect(userClaudeFallbackNotice({ ...base, firstLaunch: false })).toBeUndefined()
+    expect(userClaudeFallbackNotice({ ...base, starter: { ...base.starter, isBot: true } })).toBeUndefined()
+    expect(userClaudeFallbackNotice({ ...base, starter: { platform: 'slack', id: 'U123' } })).toBeUndefined()
+    expect(
+      userClaudeFallbackNotice({ ...base, starter: { platform: 'slack', id: 'B0AB12', isBot: false } })
+    ).toBeUndefined()
+    expect(userClaudeFallbackNotice({ ...base, reason: 'error' })).toBeUndefined()
+    expect(userClaudeFallbackNotice({ ...base, reason: undefined })).toBeUndefined()
   })
 })
