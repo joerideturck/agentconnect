@@ -12,6 +12,7 @@ import {
   type SkillWriteBackCandidate
 } from '../shim/skill-protocol.js'
 import { inspectLocalSkillSource, type SkillSourceSnapshotLimits } from './skill-source-snapshot.js'
+import { uploadSkillFiles } from './skill-upload-scheduler.js'
 
 export interface ClusterSkillSnapshotSource {
   sourceId: string
@@ -143,10 +144,10 @@ export class ClusterSkillCoordinator {
     })
     // Re-read at upload time. A body that changed since inspection fails the shim's own digest
     // check against this descriptor, so streaming costs no safety.
-    for (const file of files) {
+    await uploadSkillFiles(files, async (file) => {
       const body = await readFile(join(sourceDirs.get(file.sourceId)!, ...file.path.split('/')))
       await input.client.upload(authority.operationId, handle, file, body)
-    }
+    })
     if (!(await this.store.authorizeClusterSkillMutation({ ...authority, priorRevision: begun.priorRevision }))) {
       throw new Error('cluster skill reconciliation lost duty authority')
     }
