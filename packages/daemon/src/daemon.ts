@@ -839,7 +839,12 @@ import { sessionInitiatedBy } from './workspace/session-branch.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
 import { GitSkillSourceCache } from './skills/git-skill-source-cache.js'
 import { acceptedDreamSkillSources } from './skills/dream-skills.js'
-import { acquireGitSkillSource, gitSkillRepositoryPath } from './skills/skill-git-source.js'
+import {
+  acquireGitSkillSource,
+  gitSkillRepositoryPath,
+  isPinnedGitSkillRef,
+  resolveBoundedGitSkillSource
+} from './skills/skill-git-source.js'
 import { GitSkillRefTracker } from './skills/git-skill-ref-tracker.js'
 import {
   createSkillRefPlanResolution,
@@ -1673,6 +1678,11 @@ function postlessCall(callMeta: CallMeta | undefined): boolean {
 }
 
 /** The store row a memory dream executes under. */
+/** The commit a Git skill entry is pinned to, as the installer pins a planned commit; undefined for a moving ref. */
+function pinnedSkillCommit(entry: AgentSkillEntrySchema): string | undefined {
+  return isPinnedGitSkillRef(entry) ? resolveBoundedGitSkillSource(entry).ref?.toLowerCase() : undefined
+}
+
 function dreamExecutionKey(agentId: string, dreamId: string): string {
   return sessionKey('dream', 'memory', dreamId, agentId)
 }
@@ -9010,6 +9020,18 @@ export class Daemon {
       skillsStateDir: join(this.root, 'skill-installs'),
       skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null,
       resolveGitSkillRef: (entry: AgentSkillEntrySchema, value: Agent) => this.trackedGitSkillCommit(entry, value),
+      // The installer pins a planned commit into the entry's ref; the cache keys on it, so the sources of one
+      // repository share one download and a new session reuses what an earlier one fetched.
+      acquireGitSkill: (
+        entry: AgentSkillEntrySchema,
+        options: { destination: string; agentId: string; useGitCredential: boolean }
+      ) =>
+        this.gitSkillSources
+          ? this.gitSkillSources.resolve(entry, pinnedSkillCommit(entry), {
+              agentId: options.agentId,
+              useGitCredential: options.useGitCredential
+            })
+          : acquireGitSkillSource(entry, options),
       reportSkillSourceFailures: (value: Agent, failures: SkillSourceFailureEntry[]) =>
         this.reportSkillSourceFailures(value.id, failures)
     }
