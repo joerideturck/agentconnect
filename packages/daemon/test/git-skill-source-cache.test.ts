@@ -67,6 +67,7 @@ describe('Git skill source cache', () => {
     const skills = cache()
     const first = await skills.resolve(entry(), COMMIT_A, options())
     expect(first).toMatchObject({ resolvedCommit: COMMIT_A, cached: false })
+    clock += 61_000
     const second = await skills.resolve(entry(), COMMIT_A, options())
     expect(second).toMatchObject({ resolvedCommit: COMMIT_A, cached: true })
     expect(second.sourceDir).toBe(first.sourceDir)
@@ -74,6 +75,30 @@ describe('Git skill source cache', () => {
     // The miss proved access through its own acquisition; the hit proved it with the identity request.
     expect(verifications).toEqual(['agent-1'])
     expect(await readFile(join(second.sourceDir, 'README.md'), 'utf8')).toHaveLength(1024)
+  })
+
+  it("lets one passed access check answer an agent's hits on a repository for a minute, and never a failed one", async () => {
+    const skills = cache()
+    await skills.resolve(entry({ subDir: 'pack' }), COMMIT_A, options())
+    // Sibling folders of the same repository, read right after: the download proved access for them.
+    await skills.resolve(entry({ subDir: 'other' }), COMMIT_A, options())
+    await skills.resolve(entry({ subDir: 'third' }), COMMIT_A, options())
+    expect(verifications).toEqual([])
+    clock += 61_000
+    // Concurrent hits once the window has passed share one check.
+    await Promise.all([
+      skills.resolve(entry({ subDir: 'pack' }), COMMIT_A, options()),
+      skills.resolve(entry({ subDir: 'other' }), COMMIT_A, options())
+    ])
+    expect(verifications).toEqual(['agent-1'])
+    // Another agent proves its own access.
+    await skills.resolve(entry(), COMMIT_A, options('agent-2'))
+    clock += 61_000
+    denied = true
+    await expect(skills.resolve(entry(), COMMIT_A, options())).rejects.toThrow(/status 404/)
+    denied = false
+    await skills.resolve(entry(), COMMIT_A, options())
+    expect(verifications).toEqual(['agent-1', 'agent-1', 'agent-1'])
   })
 
   it('applies the source folder to both a miss and a hit', async () => {
@@ -108,6 +133,7 @@ describe('Git skill source cache', () => {
     const skills = cache()
     await skills.resolve(entry(), COMMIT_A, options())
     denied = true
+    clock += 61_000
     await expect(skills.resolve(entry(), COMMIT_A, options())).rejects.toThrow(/status 404/)
     expect(acquisitions).toHaveLength(1)
   })
