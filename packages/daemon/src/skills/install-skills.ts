@@ -33,7 +33,12 @@ import {
 import { resolveSkillSelections } from './skill-cli-selection.js'
 import { canonicalSkillMutationRoot } from './skill-workspace-mutator.js'
 import { acquireGitSkillSource, isPinnedGitSkillRef, resolveBoundedGitSkillSource } from './skill-git-source.js'
-import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, snapshotLocalSkillSource } from './skill-source-snapshot.js'
+import {
+  GIT_SKILL_SOURCE_SNAPSHOT_LIMITS,
+  inspectLocalSkillSource,
+  snapshotLocalSkillSource
+} from './skill-source-snapshot.js'
+import { BuiltSkillCache, type BuiltSkillBundle } from './built-skill-cache.js'
 import {
   SkillSourceFailure,
   skillSourceFailureCode,
@@ -147,6 +152,8 @@ export interface InstallSkillsOptions {
    * source keeps its retained commit, which is what a caller with no network
    * seam wants; null for one entry ⇒ unknown, so the retained commit stands. */
   resolveGitRef?: (entry: AgentSkillEntry) => Promise<string | null>
+  /** Daemon-owned directory of what earlier runs built from a Git source's content; absent ⇒ every run builds. */
+  builtSkillsDir?: string
   warn?: (message: string) => void
 }
 
@@ -173,6 +180,10 @@ interface PreparedSource {
    * install everything the source exposes, any leaves). */
   expectedLeaves: string[]
   contentDigest: string
+  /** Bundles an earlier run built from this exact content and selection, already copied into this run's scratch. */
+  built?: BuiltSkillBundle[]
+  /** Where this source's build is recorded once it succeeds. */
+  buildKey?: string
 }
 
 /** Reconcile all source classes in one ordered transaction. Expected source
@@ -336,6 +347,7 @@ async function installSkillsLocked(
     }
 
     const prepared: PreparedSource[] = []
+    const builtSkills = opts.builtSkillsDir ? new BuiltSkillCache(opts.builtSkillsDir) : undefined
     const resolutionsByDefinition = new Map(
       retainedGitResolutions.map((resolution) => [resolution.definitionDigest, resolution.resolvedCommit])
     )
@@ -369,6 +381,39 @@ async function installSkillsLocked(
           throw new SkillSourceFailure('ref_moved', `Git source "${entry.name}" did not resolve to its planned commit`)
         }
         resolutionsByDefinition.set(definitionDigest, resolvedCommit)
+        const sourceKey = `git:${index}:${definitionDigest}:${resolvedCommit}:${gitEntryScopeDigest(entry)}`
+        // What the CLI builds depends only on the source's content, the selection and the CLI: an earlier run's build of
+        // the same content is served without copying, hashing and building the whole tree again.
+        let buildKey: string | undefined
+        if (builtSkills) {
+          const inspected = await inspectLocalSkillSource(acquired.sourceDir, {
+            limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
+          })
+          buildKey = builtSkills.key({
+            version: 1,
+            cli: SKILLS_CLI_SPEC,
+            runtime: agent.runtime,
+            skillsAgentId: agentId,
+            name: entry.name,
+            skills: entry.skills ?? [],
+            content: inspected.sha256
+          })
+          const built = await builtSkills.load(buildKey, join(scratch, 'built', `git-${index}`))
+          if (built) {
+            accountInput(inspected.fileCount, inspected.totalBytes)
+            prepared.push({
+              key: sourceKey,
+              name: entry.name,
+              git: true,
+              sourceDir: acquired.sourceDir,
+              skills: [],
+              expectedLeaves: [],
+              contentDigest: inspected.sha256,
+              built
+            })
+            continue
+          }
+        }
         const destination = join(scratch, 'inputs', `git-${index}`)
         await prepareSnapshotDestination(destination)
         const snapshot = await snapshotLocalSkillSource(acquired.sourceDir, destination, {
@@ -387,13 +432,14 @@ async function installSkillsLocked(
           }
         )
         prepared.push({
-          key: `git:${index}:${definitionDigest}:${resolvedCommit}:${gitEntryScopeDigest(entry)}`,
+          key: sourceKey,
           name: entry.name,
           git: true,
           sourceDir: destination,
           skills: selection.cliSelections,
           expectedLeaves: selection.expectedLeaves,
-          contentDigest: snapshot.sha256
+          contentDigest: snapshot.sha256,
+          ...(buildKey ? { buildKey } : {})
         })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'unknown Git skill source error'
@@ -446,47 +492,55 @@ async function installSkillsLocked(
       let invocation: SkillsCliInvocationResult | undefined
       const staged: CandidateSkillBundle[] = []
       try {
-        invocation = await runCli({
-          sourceDir: source.sourceDir,
-          sourceKey: source.key,
-          agentId,
-          skills: source.skills,
-          cellDir
-        })
-        if (invocation.isolation === 'process') {
-          opts.warn?.(
-            `skills: kernel sandbox unavailable; using private-process fallback${invocation.isolationReason ? ` (${invocation.isolationReason})` : ''}`
-          )
-        }
-        if (invocation.bundles.length === 0) {
-          throw new Error(`skills CLI produced no bundles for ${source.name}`)
-        }
-        if (source.expectedLeaves.length > 0) {
-          const expected = [...source.expectedLeaves].sort()
-          const actual = invocation.bundles.map((bundle) => bundle.relativeRoot.split('/').at(-1) ?? '').sort()
-          if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-            throw new Error(`skills CLI output did not exactly match selection for ${source.name}`)
+        if (source.built) {
+          for (const bundle of source.built) {
+            stagedCandidateFiles += bundle.files.length
+            stagedCandidateBytes += bundle.files.reduce((total, file) => total + file.size, 0)
+            staged.push({ ...bundle, sourceKey: source.key })
           }
-        }
-        for (const [bundleIndex, bundle] of invocation.bundles.entries()) {
-          const destination = join(scratch, 'candidates', `${index}-${bundleIndex}`)
-          await prepareSnapshotDestination(destination)
-          const snap = await snapshotLocalSkillSource(bundle.sourceDir, destination)
-          stagedCandidateFiles += snap.fileCount
-          stagedCandidateBytes += snap.totalBytes
-          const files: SkillFileReceipt[] = snap.files.map((file) => ({
-            path: file.path,
-            mode: file.mode & 0o111 ? 0o700 : 0o600,
-            size: file.size,
-            sha256: stripShaPrefix(file.sha256)
-          }))
-          staged.push({
-            relativeRoot: bundle.relativeRoot,
+        } else {
+          invocation = await runCli({
+            sourceDir: source.sourceDir,
             sourceKey: source.key,
-            sourceDir: destination,
-            files,
-            treeDigest: treeDigest(files)
+            agentId,
+            skills: source.skills,
+            cellDir
           })
+          if (invocation.isolation === 'process') {
+            opts.warn?.(
+              `skills: kernel sandbox unavailable; using private-process fallback${invocation.isolationReason ? ` (${invocation.isolationReason})` : ''}`
+            )
+          }
+          if (invocation.bundles.length === 0) {
+            throw new Error(`skills CLI produced no bundles for ${source.name}`)
+          }
+          if (source.expectedLeaves.length > 0) {
+            const expected = [...source.expectedLeaves].sort()
+            const actual = invocation.bundles.map((bundle) => bundle.relativeRoot.split('/').at(-1) ?? '').sort()
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+              throw new Error(`skills CLI output did not exactly match selection for ${source.name}`)
+            }
+          }
+          for (const [bundleIndex, bundle] of invocation.bundles.entries()) {
+            const destination = join(scratch, 'candidates', `${index}-${bundleIndex}`)
+            await prepareSnapshotDestination(destination)
+            const snap = await snapshotLocalSkillSource(bundle.sourceDir, destination)
+            stagedCandidateFiles += snap.fileCount
+            stagedCandidateBytes += snap.totalBytes
+            const files: SkillFileReceipt[] = snap.files.map((file) => ({
+              path: file.path,
+              mode: file.mode & 0o111 ? 0o700 : 0o600,
+              size: file.size,
+              sha256: stripShaPrefix(file.sha256)
+            }))
+            staged.push({
+              relativeRoot: bundle.relativeRoot,
+              sourceKey: source.key,
+              sourceDir: destination,
+              files,
+              treeDigest: treeDigest(files)
+            })
+          }
         }
       } catch (error) {
         // Roll this source's staging back before the counters are charged.
@@ -540,6 +594,12 @@ async function installSkillsLocked(
         continue
       }
       for (const previous of replaced) await fsp.rm(previous.sourceDir, { recursive: true, force: true })
+      if (builtSkills && source.buildKey && !source.built) {
+        // Recorded only once the whole source built and was admitted, so an entry is always a complete build.
+        await builtSkills.store(source.buildKey, staged).catch((error: unknown) => {
+          opts.warn?.(`skills: could not record the build of ${source.name} (${(error as Error).message})`)
+        })
+      }
     }
 
     // Owned bundles belonging to a source this run could not ACQUIRE: still desired, so the

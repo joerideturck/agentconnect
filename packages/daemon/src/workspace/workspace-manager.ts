@@ -557,6 +557,8 @@ export class WorkspaceManager {
         ? { resolveGitRef: (entry: AgentSkillEntry) => opts.resolveGitSkillRef!(entry, agent) }
         : {}),
       ...(opts.acquireGitSkill ? { acquireGit: opts.acquireGitSkill } : {}),
+      // Builds are keyed by content, so every agent and session of this daemon shares them.
+      ...(opts.skillsStateDir ? { builtSkillsDir: join(opts.skillsStateDir, 'built') } : {}),
       warn: (msg) => skillsLog.warn(msg)
     })
     if (installed.sourceFailures) opts.reportSkillSourceFailures?.(agent, installed.sourceFailures)
