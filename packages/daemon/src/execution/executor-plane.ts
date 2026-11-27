@@ -45,7 +45,8 @@ export const EXECUTOR_GRANTS: ShimCapability[] = [
   'tunnel',
   'skills',
   'skills-wide',
-  'skills-receipts'
+  'skills-receipts',
+  'skills-archive'
 ]
 
 /** A day, as a local VM's binding credential takes (#2165): a renewal proves nothing new on a pipe that is already authenticated. */
@@ -347,7 +348,10 @@ export class ExecutorPlane implements ExecutionPlane {
       false,
       session.hasCapability('skills-receipts'),
       // Executors keep daemon acquisition in P2 (source-cache.md §13), whatever their shim advertises.
-      false
+      false,
+      undefined,
+      false,
+      session.hasCapability('skills-archive')
     )
   }
 

@@ -58,6 +58,7 @@ export const ShimFeatureSchema = z.enum([
   'cluster-skills-v1',
   'cluster-skills-v2',
   'cluster-skills-v3',
+  'cluster-skills-archive-v1',
   'source-cache-bundle-v1',
   'skill-git-in-pod-v1',
   'skill-git-writeback-v1',
@@ -92,6 +93,8 @@ export const ShimCapabilitySchema = z.enum([
   'skills-wide',
   // Bounded paging of prior and installed skill receipts.
   'skills-receipts',
+  // An operation's declared files arrive as one gzip archive instead of an upload per file.
+  'skills-archive',
   // Git skill Sources arrive as reconcile plan entries the shim clones itself (source-cache.md §8, §13).
   'skills-git',
   // A Git plan entry may ask the shim to bundle its clone for write-back, uploaded over `bundle` (source-cache.md §9, §13).

@@ -39,7 +39,7 @@ import { sameSelection, type SelectedRepository } from '../decisions/repo-select
 import type { ExecutionPlane, PlaneResolver, PlaneScope } from '../execution/plane.js'
 import { makeLogger } from '../log.js'
 import { withStartupPhase } from '../session/startup-progress.js'
-import { installSkills, type LocalSkillSource } from '../skills/install-skills.js'
+import { installSkills, type GitSkillAcquirer, type LocalSkillSource } from '../skills/install-skills.js'
 import { isCredentialedSkillSource } from '../skills/skill-ref-resolution.js'
 import type { SkillSourceFailureEntry } from '../skills/skill-source-failure.js'
 import { acceptedDreamSkillSources } from '../skills/dream-skills.js'
@@ -134,6 +134,8 @@ export interface PrepareWorkspaceOptions {
   /** Where a TRACKING Git skill ref points now, so a new session picks up a
    * moved branch head (shared-skills.md §5). Absent ⇒ retained commits stand. */
   resolveGitSkillRef?: (entry: AgentSkillEntry, agent: Agent) => Promise<string | null>
+  /** Acquires one Git skill source; absent ⇒ each source downloads its repository afresh. */
+  acquireGitSkill?: GitSkillAcquirer
   /** Told the Git Sources a completed install could not install (source-cache.md §11). */
   reportSkillSourceFailures?: (agent: Agent, failures: SkillSourceFailureEntry[]) => void
 }
@@ -554,6 +556,9 @@ export class WorkspaceManager {
       ...(opts.resolveGitSkillRef
         ? { resolveGitRef: (entry: AgentSkillEntry) => opts.resolveGitSkillRef!(entry, agent) }
         : {}),
+      ...(opts.acquireGitSkill ? { acquireGit: opts.acquireGitSkill } : {}),
+      // Builds are keyed by content, so every agent and session of this daemon shares them.
+      ...(opts.skillsStateDir ? { builtSkillsDir: join(opts.skillsStateDir, 'built') } : {}),
       warn: (msg) => skillsLog.warn(msg)
     })
     if (installed.sourceFailures) opts.reportSkillSourceFailures?.(agent, installed.sourceFailures)

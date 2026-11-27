@@ -48,6 +48,8 @@ export interface GitSkillSourceCacheOptions {
   acquire?: typeof acquireGitSkillSource
   /** The access check a hit runs; injectable for tests. */
   verifyAccess?: typeof verifyGitSkillSourceAccess
+  /** How long a passed access check answers this agent's later hits on the same repository. */
+  accessProofMs?: number
 }
 
 interface EntryMetadata {
@@ -70,6 +72,9 @@ export class GitSkillSourceCache {
   private readonly verifyAccess: typeof verifyGitSkillSourceAccess
   /** Acquisitions in flight per entry, so sources that share a repository and commit download it once. */
   private readonly inflight = new Map<string, Promise<{ entryDir: string; cached: boolean }>>()
+  private readonly accessProofMs: number
+  /** Per agent and repository: when its last passed access check stops answering hits, or the check in flight. */
+  private readonly accessProofs = new Map<string, number | Promise<void>>()
 
   constructor(
     private readonly root: string,
@@ -81,6 +86,7 @@ export class GitSkillSourceCache {
     this.now = options.now ?? Date.now
     this.acquire = options.acquire ?? acquireGitSkillSource
     this.verifyAccess = options.verifyAccess ?? verifyGitSkillSourceAccess
+    this.accessProofMs = options.accessProofMs ?? 60_000
   }
 
   /**
@@ -129,6 +135,28 @@ export class GitSkillSourceCache {
   ): Promise<{ entryDir: string; cached: boolean }> {
     const hit = await this.lookup(opts.agentId, repoKey, planned)
     if (hit) {
+      await this.proveAccess(entry, opts, repoKey)
+      return { entryDir: hit, cached: true }
+    }
+    const { entryDir, commit } = await this.download(entry, planned, opts, repoKey)
+    if (commit !== planned) throw new Error('skill Git source did not resolve to its planned commit')
+    // The download began with the same identity check a hit runs, so it proves access for the sources after it.
+    this.accessProofs.set(`${opts.agentId}\0${repoKey}`, this.now() + this.accessProofMs)
+    return { entryDir, cached: false }
+  }
+
+  /**
+   * Re-prove the agent can read the repository before a hit is served. The sources of one repository — folders of one
+   * collection, read one after another by a preparation — share one check: a passed one answers this agent's hits on
+   * that repository for `accessProofMs`, the window a tracked ref's resolution is already trusted for, and concurrent
+   * hits wait for the check in flight. A failed check is never remembered, so the next hit checks again.
+   */
+  private async proveAccess(entry: AgentSkillEntry, opts: Omit<AcquireOptions, 'destination'>, repoKey: string) {
+    const key = `${opts.agentId}\0${repoKey}`
+    const proof = this.accessProofs.get(key)
+    if (typeof proof === 'number' && this.now() < proof) return
+    if (proof instanceof Promise) return await proof
+    const checking = (async () => {
       const staging = await this.newStaging()
       try {
         // Throws, like an acquisition would, when the agent can no longer read the repository.
@@ -136,11 +164,15 @@ export class GitSkillSourceCache {
       } finally {
         await fsp.rm(staging, { recursive: true, force: true }).catch(() => undefined)
       }
-      return { entryDir: hit, cached: true }
+    })()
+    this.accessProofs.set(key, checking)
+    try {
+      await checking
+      this.accessProofs.set(key, this.now() + this.accessProofMs)
+    } catch (error) {
+      this.accessProofs.delete(key)
+      throw error
     }
-    const { entryDir, commit } = await this.download(entry, planned, opts, repoKey)
-    if (commit !== planned) throw new Error('skill Git source did not resolve to its planned commit')
-    return { entryDir, cached: false }
   }
 
   private async download(
