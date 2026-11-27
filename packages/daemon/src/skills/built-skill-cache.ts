@@ -34,6 +34,44 @@ export interface BuiltSkillCacheOptions {
   now?: () => number
 }
 
+/** What a build key needs of a source tree: its manifest digest and the counts its admission charges. */
+export interface SourceInspection {
+  sha256: string
+  fileCount: number
+  totalBytes: number
+}
+
+/** Remembered inspections, by the tree's real path and directory identity; bounded, oldest first out. */
+const inspections = new Map<string, SourceInspection>()
+const MAX_REMEMBERED_INSPECTIONS = 512
+
+/**
+ * The inspection of `sourceDir`, remembered by its path. Hashing a source tree in place costs a second or two for a large
+ * collection, and every new session of an agent asks for the same trees. A path names immutable content here: a source
+ * cache entry is keyed by its commit and never rewritten, and any other acquisition lands in a fresh scratch directory
+ * of its own run. The directory's device, inode and change time ride the key, so a tree replaced under the same path is
+ * inspected again. A wrong digest could only ever name a build that the receipts check and the publication still verify.
+ */
+export async function rememberedSourceInspection(
+  sourceDir: string,
+  inspect: (dir: string) => Promise<SourceInspection>
+): Promise<SourceInspection> {
+  const real = await fsp.realpath(sourceDir)
+  const stat = await fsp.stat(real)
+  const key = `${real}\0${stat.dev}\0${stat.ino}\0${stat.ctimeMs}`
+  const known = inspections.get(key)
+  if (known) {
+    inspections.delete(key)
+    inspections.set(key, known)
+    return known
+  }
+  const inspected = await inspect(real)
+  const remembered = { sha256: inspected.sha256, fileCount: inspected.fileCount, totalBytes: inspected.totalBytes }
+  inspections.set(key, remembered)
+  if (inspections.size > MAX_REMEMBERED_INSPECTIONS) inspections.delete(inspections.keys().next().value!)
+  return remembered
+}
+
 export class BuiltSkillCache {
   private readonly idleMs: number
   private readonly now: () => number

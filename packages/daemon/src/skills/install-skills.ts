@@ -38,7 +38,7 @@ import {
   inspectLocalSkillSource,
   snapshotLocalSkillSource
 } from './skill-source-snapshot.js'
-import { BuiltSkillCache, type BuiltSkillBundle } from './built-skill-cache.js'
+import { BuiltSkillCache, rememberedSourceInspection, type BuiltSkillBundle } from './built-skill-cache.js'
 import {
   SkillSourceFailure,
   skillSourceFailureCode,
@@ -386,9 +386,9 @@ async function installSkillsLocked(
         // the same content is served without copying, hashing and building the whole tree again.
         let buildKey: string | undefined
         if (builtSkills) {
-          const inspected = await inspectLocalSkillSource(acquired.sourceDir, {
-            limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
-          })
+          const inspected = await rememberedSourceInspection(acquired.sourceDir, (dir) =>
+            inspectLocalSkillSource(dir, { limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS })
+          )
           buildKey = builtSkills.key({
             version: 1,
             cli: SKILLS_CLI_SPEC,

@@ -9,6 +9,7 @@ import {
   type SkillsCliInvocation,
   type SkillsCliInvocationResult
 } from '../src/skills/install-skills.js'
+import { rememberedSourceInspection } from '../src/skills/built-skill-cache.js'
 
 const digest = (body: string) => createHash('sha256').update(body).digest('hex')
 const COMMIT = 'a'.repeat(40)
@@ -74,6 +75,9 @@ describe("a Git source's build, shared by the workspaces that install the same c
 
   it('builds again when the source content changes', async () => {
     await install('session-1')
+    // A new commit is a new source cache entry: new content arrives under a new path.
+    gitDir = join(root, 'sources', 'git-skill-next')
+    await mkdir(gitDir, { recursive: true })
     await writeFile(join(gitDir, 'SKILL.md'), '---\nname: git-skill\ndescription: fixture\n---\n# two\n')
     const changed = await install('session-2')
     expect(builds).toBe(2)
@@ -88,5 +92,28 @@ describe("a Git source's build, shared by the workspaces that install the same c
     expect(builds).toBe(2)
     expect(next.skill).toContain('# one')
     expect(next.result.errors).toEqual([])
+  })
+})
+
+describe('a remembered source inspection', () => {
+  it('hashes a tree once per path, and again once the tree under that path is replaced', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-remembered-inspection-'))
+    try {
+      const dir = join(root, 'tree')
+      await mkdir(dir)
+      await writeFile(join(dir, 'SKILL.md'), 'one\n')
+      let inspections = 0
+      const inspect = async () => ({ sha256: `digest-${++inspections}`, fileCount: 1, totalBytes: 4 })
+      const first = await rememberedSourceInspection(dir, inspect)
+      expect(await rememberedSourceInspection(dir, inspect)).toEqual(first)
+      expect(inspections).toBe(1)
+      await removeTree(dir)
+      await mkdir(dir)
+      await writeFile(join(dir, 'SKILL.md'), 'two\n')
+      expect((await rememberedSourceInspection(dir, inspect)).sha256).not.toBe(first.sha256)
+      expect(inspections).toBe(2)
+    } finally {
+      await removeTree(root)
+    }
   })
 })
