@@ -764,29 +764,17 @@ describe('derived visibility — daemon keys inherit the daemon visibility', () 
   })
 })
 
-describe('cron writes are owner-only', () => {
-  it('a collaborator cannot create, run or delete a cron, even on an agent they can see', async () => {
-    const owner = await makeUser('cr-owner', 'owner')
-    const member = await makeUser('cr-member', 'collaborator')
-    const daemon = randomUUID()
-    await seedDaemon(prisma, daemon)
-    const agent = randomUUID()
-    await seedAgent(prisma, agent, { daemonId: daemon })
-    const cronId = randomUUID()
-    const payload = { agentId: agent, schedule: '0 0 * * *', timezone: 'UTC', trigger: 'daily report', enabled: true }
-
-    const denied = await appAs(member).app.inject({ method: 'PUT', url: `${ORG}/crons/${randomUUID()}`, payload })
-    expect(denied.statusCode).toBe(403)
-    expect(denied.json()).toMatchObject({ message: 'only an organization owner can do this' })
-
-    expect((await appAs(owner).app.inject({ method: 'PUT', url: `${ORG}/crons/${cronId}`, payload })).statusCode).toBe(
-      200
-    )
-    const memberApp = appAs(member).app
-    expect((await memberApp.inject({ method: 'PUT', url: `${ORG}/crons/${cronId}`, payload })).statusCode).toBe(403)
-    expect((await memberApp.inject({ method: 'POST', url: `${ORG}/crons/${cronId}/run` })).statusCode).toBe(403)
-    expect((await memberApp.inject({ method: 'DELETE', url: `${ORG}/crons/${cronId}` })).statusCode).toBe(403)
-    expect((await memberApp.inject({ method: 'GET', url: `${ORG}/crons/${cronId}` })).statusCode).toBe(200)
+describe('reference-write cannot target an invisible agent', () => {
+  it('a cron cannot be bound to a restricted agent the caller can’t see (rejected as unknown agentId)', async () => {
+    const other = await makeUser('cr-other', 'collaborator')
+    const R = randomUUID()
+    await seedAgent(prisma, R, { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] })
+    const res = await appAs(other).app.inject({
+      method: 'PUT',
+      url: `${ORG}/crons/${randomUUID()}`,
+      payload: { agentId: R, schedule: '0 0 * * *', trigger: 'daily report', enabled: true }
+    })
+    expect(res.statusCode).toBe(400) // same verdict as a nonexistent id — no existence oracle
   })
 })
 
@@ -916,8 +904,8 @@ describe('atomic restricted-create (visibility + sharedWith in the create body)'
     expect((create.json() as { sharedWith: string[] }).sharedWith).toEqual([member])
 
     // An EDIT carrying visibility:'org' in the CONTENT body must NOT change sharing —
-    // that only moves through PUT /crons/:id/sharing. Cron writes are owner-only.
-    const edit = await appAs(owner).app.inject({
+    // that only moves through PUT /crons/:id/sharing.
+    const edit = await appAs(member).app.inject({
       method: 'PUT',
       url: `${ORG}/crons/${cronId}`,
       payload: {

@@ -1,4 +1,4 @@
-// `cron/self` over the real daemon WS edge: only organization owners schedule tasks, so the CP does not offer an agent its own cron tools.
+// `cron/self` over the real daemon WS edge: an agent manages only its own crons, and the CP advertises the tools it takes.
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { AGENT_CRON_TOOLS_FEATURE } from '@agentconnect.md/protocol'
@@ -10,12 +10,13 @@ import { AgentCronService } from '../../src/orchestrator/agentCrons.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import type { AgentDelivery } from '../../src/orchestrator/agentDelivery.js'
 import { PgAgentRepo, PgCronRepo, PgIntegrationRepo } from '../../src/persistence/index.js'
-import { AgentId } from '../../src/domain/ids.js'
+import { AgentId, CronId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddd31'
 const OTHER = 'dddddddd-dddd-4ddd-8ddd-dddddddddd32'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa31'
+const FOREIGN = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa32'
 
 function harness() {
   const h = buildWsHarness(prisma)
@@ -66,11 +67,11 @@ async function answer(stub: InMemoryDaemonStub, id: string) {
 }
 
 describe('cron/self over the daemon WS edge', () => {
-  it('does not advertise the agent cron tools', async () => {
+  it('advertises the tools the connection may use', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     const { features } = await ready(DAEMON)
-    expect(features).not.toContain(AGENT_CRON_TOOLS_FEATURE)
+    expect(features).toContain(AGENT_CRON_TOOLS_FEATURE)
   })
 
   it('refuses a daemon that does not serve the agent', async () => {
@@ -82,30 +83,70 @@ describe('cron/self over the daemon WS edge', () => {
     expect(error).toMatchObject({ code: 'SCOPE_DENIED' })
   })
 
-  it('refuses an agent saving or deleting a cron, and lists the ones bound to it', async () => {
+  it('creates, lists and deletes its own cron against real Postgres', async () => {
     await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, OTHER)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, FOREIGN, { daemonId: OTHER })
     const { stub, audited } = await ready(DAEMON)
+    // A one-off run is refused once its time has passed, so the time is taken from the clock, not written here.
+    const runAtLocal = `${new Date().getUTCFullYear() + 1}-06-01T09:00:00`
     const saved = await answer(
       stub,
       stub.inject('cron/self', {
         orgId: DEFAULT_ORG_ID,
         op: 'save',
         agentId: AGENT,
-        cron: { schedule: '0 9 * * *', timezone: 'UTC', trigger: 'check the deploy' }
+        cron: { runAt: `${runAtLocal}+08:00`, timezone: 'Asia/Shanghai', trigger: 'check the deploy' }
       })
     )
-    expect(saved.error).toMatchObject({ code: 'SCOPE_DENIED' })
-    expect(await new PgCronRepo(prisma).listForAgent(AgentId(AGENT))).toHaveLength(0)
+    expect(saved.error).toBeUndefined()
+    const cronId = (saved.reply!.cron as { cronId: string }).cronId
+    expect(saved.reply).toMatchObject({ status: 'ok', cron: { schedule: runAtLocal, once: true } })
+
+    const listed = await answer(stub, stub.inject('cron/self', { orgId: DEFAULT_ORG_ID, op: 'list', agentId: AGENT }))
+    expect((listed.reply!.crons as unknown[]).length).toBe(1)
+
+    // An agent served by a different daemon cannot be scheduled from this socket.
+    const foreign = await answer(
+      stub,
+      stub.inject('cron/self', {
+        orgId: DEFAULT_ORG_ID,
+        op: 'save',
+        agentId: FOREIGN,
+        cron: { schedule: '0 9 * * *', timezone: 'UTC', trigger: 'someone else’s agent' }
+      })
+    )
+    expect(foreign.error).toMatchObject({ code: 'SCOPE_DENIED' })
 
     const deleted = await answer(
       stub,
-      stub.inject('cron/self', { orgId: DEFAULT_ORG_ID, op: 'delete', agentId: AGENT, cronId: randomUUID() })
+      stub.inject('cron/self', { orgId: DEFAULT_ORG_ID, op: 'delete', agentId: AGENT, cronId })
     )
-    expect(deleted.error).toMatchObject({ code: 'SCOPE_DENIED' })
+    expect(deleted.reply).toMatchObject({ status: 'ok' })
+    expect(await new PgCronRepo(prisma).get(OrgId(DEFAULT_ORG_ID), CronId(cronId))).toBeNull()
+    expect(audited.map((a) => a.kind)).toEqual(['cron_change', 'cron_change'])
+  })
 
-    const listed = await answer(stub, stub.inject('cron/self', { orgId: DEFAULT_ORG_ID, op: 'list', agentId: AGENT }))
-    expect(listed.reply).toMatchObject({ status: 'ok', crons: [] })
-    expect(audited).toHaveLength(0)
+  it('refuses a save whose target is not one of the agent’s integrations', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const { stub } = await ready(DAEMON)
+    const result = await answer(
+      stub,
+      stub.inject('cron/self', {
+        orgId: DEFAULT_ORG_ID,
+        op: 'save',
+        agentId: AGENT,
+        cron: {
+          schedule: '0 9 * * *',
+          timezone: 'UTC',
+          trigger: 'a',
+          target: { integrationId: randomUUID(), channel: 'C1' }
+        }
+      })
+    )
+    expect(result.reply).toMatchObject({ status: 'refused' })
+    expect(await new PgCronRepo(prisma).listForAgent(AgentId(AGENT))).toHaveLength(0)
   })
 })
