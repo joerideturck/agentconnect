@@ -9725,9 +9725,10 @@ export class Daemon {
     if (notice) {
       this.userClaudeNoticed.add(sessionKey)
       const conn = this.replyConnFor(agent.id) as Partial<SlackConnection> | undefined
-      void conn
-        ?.postEphemeral?.(notice.channel, notice.user, notice.text, notice.thread)
-        ?.catch((err: unknown) => this.log.warn(`claude credential notice failed for ${sessionKey}: ${String(err)}`))
+      void (async () => {
+        if (!conn?.openDirectMessage || !conn.postMessage) return
+        await conn.postMessage(await conn.openDirectMessage(notice.user), notice.text)
+      })().catch((err: unknown) => this.log.warn(`claude credential notice failed for ${sessionKey}: ${String(err)}`))
     }
     return credential?.token
   }

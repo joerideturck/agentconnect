@@ -94,10 +94,8 @@ describe('userClaudeFallbackNotice', () => {
 
   it('tells the person who opened a new session where to connect', () => {
     expect(userClaudeFallbackNotice(base)).toEqual({
-      channel: 'C1',
-      thread: '1795621412.679719',
       user: 'U123',
-      text: expect.stringContaining('<https://qai.qargo.com/claude-account/>')
+      text: expect.stringContaining('https://qai.qargo.com/claude-account/')
     })
     expect(userClaudeFallbackNotice({ ...base, reason: 'expired' })?.text).toContain('expired')
   })
