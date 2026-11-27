@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { lstat, mkdir, open, readdir, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
+import { decodeSkillArchive, skillArchiveRawBound } from '../skills/skill-archive.js'
 import { ClusterSkillLedgerSchema } from '../store/cluster-skill-ledger.js'
 import { PINNED_SKILLS_CLI_VERSION, stageSkillsCliCell } from '../skills/skills-cli-cell.js'
 import {
@@ -30,6 +31,8 @@ import {
   type ClusterSkillReconcile,
   type ClusterSkillReconcileReply,
   type ClusterSkillUpload,
+  type ClusterSkillUploadArchive,
+  type ClusterSkillUploadArchiveReply,
   type ClusterSkillUploadReply,
   type ClusterSkillVerifyReply,
   type ClusterSkillPrior,
@@ -57,6 +60,8 @@ interface Operation {
   files: Map<string, ClusterSkillFile & { received: number; complete: boolean }>
   /** Set until the last manifest page lands; uploads and reconcile refuse a partial declaration. */
   pendingManifest: boolean
+  /** Bytes of the operation's archive received so far, when its files arrive as one. */
+  archiveReceived?: number
   declaredBytes: number
   skillsAgentId: string
   authority: ClusterSkillBegin['authority']
@@ -95,6 +100,10 @@ interface PublishedPlan {
 
 const sourceDirectory = (sourceId: string): string => createHash('sha256').update(sourceId).digest('hex')
 const fileKey = (sourceId: string, path: string): string => `${sourceId}\0${path}`
+/** Where an operation's archive gathers; a source's staging directory is a hex digest, so this name is never one. */
+const ARCHIVE_FILE = '.upload-archive.gz'
+/** What gzip may add over the inflated bound for a stream that does not compress. */
+const ARCHIVE_SLACK_BYTES = 64 * 1024
 
 export class ClusterSkillHandler {
   private readonly operations = new Map<string, Operation>()
@@ -116,6 +125,7 @@ export class ClusterSkillHandler {
     | ClusterSkillBeginReply
     | ClusterSkillManifestReply
     | ClusterSkillUploadReply
+    | ClusterSkillUploadArchiveReply
     | ClusterSkillReconcileReply
     | ClusterSkillVerifyReply
     | ClusterSkillPriorReply
@@ -123,12 +133,13 @@ export class ClusterSkillHandler {
   > {
     const parsed = ClusterSkillRequestSchema.parse(payload)
     if (abort?.aborted) {
-      if (parsed.op === 'upload') await this.discard(parsed.handle)
+      if (parsed.op === 'upload' || parsed.op === 'upload-archive') await this.discard(parsed.handle)
       throw new Error('cluster skill operation aborted')
     }
     if (parsed.op === 'begin') return await this.begin(parsed, context)
     if (parsed.op === 'manifest') return this.manifest(parsed)
     if (parsed.op === 'upload') return await this.upload(parsed, abort)
+    if (parsed.op === 'upload-archive') return await this.uploadArchive(parsed, abort)
     if (parsed.op === 'prior') return this.prior(parsed, context)
     if (parsed.op === 'receipt') return this.receipt(parsed, context)
     if (parsed.op === 'verify') {
@@ -732,6 +743,74 @@ export class ClusterSkillHandler {
       if (digest !== declared.sha256) return await this.fail(operation, 'upload digest does not match declaration')
       declared.complete = true
       return { received: declared.received, complete: true }
+    } catch (error) {
+      if (abort?.aborted) {
+        await this.discard(operation.handle)
+        throw new Error('cluster skill operation aborted')
+      }
+      throw error
+    }
+  }
+
+  /** Every declared file of the operation in one gzip archive, chunked; each file is checked as its own upload would be. */
+  private async uploadArchive(
+    input: ClusterSkillUploadArchive,
+    abort?: AbortSignal
+  ): Promise<ClusterSkillUploadArchiveReply> {
+    const operation = this.operations.get(input.handle)
+    if (!operation || operation.operationId !== input.operationId)
+      throw new Error('unknown cluster skill staging handle')
+    if (operation.pendingManifest) throw new Error('cluster skill manifest is incomplete')
+    const received = operation.archiveReceived ?? 0
+    if (input.offset !== received) throw new Error(`archive offset ${input.offset} does not match ${received}`)
+    const declared = [...operation.files.values()]
+    const rawBound = skillArchiveRawBound(declared.map((file) => file.size))
+    const data = Buffer.from(input.data, 'base64')
+    if (received + data.length > rawBound + ARCHIVE_SLACK_BYTES)
+      return await this.fail(operation, 'upload archive exceeds declared size')
+    const operationRoot = join(this.deps.stagingRoot, input.handle)
+    const archivePath = join(operationRoot, ARCHIVE_FILE)
+    try {
+      await mkdir(operationRoot, { recursive: true, mode: 0o700 })
+      const file = await open(archivePath, received === 0 ? 'wx' : 'a')
+      try {
+        if (abort?.aborted) throw new Error('cluster skill operation aborted')
+        await file.write(data, 0, data.length, null)
+      } finally {
+        await file.close()
+      }
+      operation.archiveReceived = received + data.length
+      if (!input.final) return { received: operation.archiveReceived, complete: false }
+
+      let entries: Awaited<ReturnType<typeof decodeSkillArchive>>
+      try {
+        entries = await decodeSkillArchive(await readFile(archivePath), rawBound)
+      } catch (error) {
+        return await this.fail(operation, (error as Error).message)
+      }
+      await rm(archivePath, { force: true })
+      for (const entry of entries) {
+        if (abort?.aborted) throw new Error('cluster skill operation aborted')
+        const target = operation.files.get(fileKey(entry.sourceId, entry.path))
+        if (!target) return await this.fail(operation, 'upload archive names a file that was not declared')
+        if (target.complete || target.received !== 0) return await this.fail(operation, 'upload archive repeats a file')
+        if (entry.body.length !== target.size)
+          return await this.fail(operation, 'upload final size does not match declaration')
+        if (createHash('sha256').update(entry.body).digest('hex') !== target.sha256)
+          return await this.fail(operation, 'upload digest does not match declaration')
+        const destination = this.stagedFile(input.handle, entry.sourceId, entry.path)
+        await this.ensureSafeParents(destination, operationRoot)
+        const staged = await open(destination, 'wx')
+        try {
+          await staged.write(entry.body, 0, entry.body.length, null)
+          if (target.executable !== undefined) await staged.chmod(target.executable ? 0o700 : 0o600)
+        } finally {
+          await staged.close()
+        }
+        target.received = target.size
+        target.complete = true
+      }
+      return { received: operation.archiveReceived, complete: true }
     } catch (error) {
       if (abort?.aborted) {
         await this.discard(operation.handle)

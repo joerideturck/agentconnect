@@ -14,7 +14,12 @@ import { sweepMarkedUntilClear } from './marked-sweep.js'
 import { resolveCommandInPath } from './path-resolve.js'
 import { ShimServer } from './server.js'
 import { probeSkillGitInPod } from './skill-git-feature.js'
-import { SKILL_GIT_GITLAB_FEATURE, SKILL_GIT_IN_POD_FEATURE, SKILL_GIT_WRITEBACK_FEATURE } from './skill-protocol.js'
+import {
+  CLUSTER_SKILLS_ARCHIVE_FEATURE,
+  SKILL_GIT_GITLAB_FEATURE,
+  SKILL_GIT_IN_POD_FEATURE,
+  SKILL_GIT_WRITEBACK_FEATURE
+} from './skill-protocol.js'
 import { TunnelHost } from './tunnel-host.js'
 import { stageWorkspaceFile } from './fd-workspace-files.js'
 
@@ -135,6 +140,7 @@ async function main(): Promise<number> {
       'cluster-skills-v1',
       'cluster-skills-v2',
       'cluster-skills-v3',
+      CLUSTER_SKILLS_ARCHIVE_FEATURE,
       ...(bundleStaging ? [SOURCE_CACHE_BUNDLE_FEATURE, WORKSPACE_TRANSFER_FEATURE] : []),
       ...(skillGit.ok ? [SKILL_GIT_IN_POD_FEATURE, SKILL_GIT_GITLAB_FEATURE] : []),
       ...(skillWriteBack ? [SKILL_GIT_WRITEBACK_FEATURE] : [])

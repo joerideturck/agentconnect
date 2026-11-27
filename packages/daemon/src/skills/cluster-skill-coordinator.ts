@@ -13,6 +13,7 @@ import {
 } from '../shim/skill-protocol.js'
 import { inspectLocalSkillSource, type SkillSourceSnapshotLimits } from './skill-source-snapshot.js'
 import { uploadSkillFiles } from './skill-upload-scheduler.js'
+import { encodeSkillArchive } from './skill-archive.js'
 
 export interface ClusterSkillSnapshotSource {
   sourceId: string
@@ -144,10 +145,17 @@ export class ClusterSkillCoordinator {
     })
     // Re-read at upload time. A body that changed since inspection fails the shim's own digest
     // check against this descriptor, so streaming costs no safety.
-    await uploadSkillFiles(files, async (file) => {
-      const body = await readFile(join(sourceDirs.get(file.sourceId)!, ...file.path.split('/')))
-      await input.client.upload(authority.operationId, handle, file, body)
-    })
+    const bodyOf = (file: ClusterSkillFile) => readFile(join(sourceDirs.get(file.sourceId)!, ...file.path.split('/')))
+    if (input.client.archive && files.length > 0) {
+      // One compressed stream in a few large chunks; the shim checks each file against this manifest as it unpacks.
+      const entries = []
+      for (const file of files) entries.push({ sourceId: file.sourceId, path: file.path, body: await bodyOf(file) })
+      await input.client.uploadArchive(authority.operationId, handle, await encodeSkillArchive(entries))
+    } else {
+      await uploadSkillFiles(files, async (file) => {
+        await input.client.upload(authority.operationId, handle, file, await bodyOf(file))
+      })
+    }
     if (!(await this.store.authorizeClusterSkillMutation({ ...authority, priorRevision: begun.priorRevision }))) {
       throw new Error('cluster skill reconciliation lost duty authority')
     }

@@ -122,6 +122,31 @@ export const ClusterSkillUploadSchema = z
   })
   .strict()
 
+/** The `cluster-skills-archive-v1` feature: the shim takes an operation's declared files as one gzip archive. */
+export const CLUSTER_SKILLS_ARCHIVE_FEATURE = 'cluster-skills-archive-v1' as const
+
+/**
+ * An operation's declared files in one upload, chunked like a file: a gzip stream of records, each a 4-byte big-endian
+ * header length, a JSON header `{ sourceId, path, size }` and the file's bytes. One request per chunk instead of one
+ * per file, and compressed: skill sources are text.
+ */
+export const ClusterSkillUploadArchiveSchema = z
+  .object({
+    op: z.literal('upload-archive'),
+    operationId: z.string().uuid(),
+    handle: z.string().min(16).max(128),
+    offset: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_TOTAL_BYTES),
+    data: z
+      .string()
+      .max(Math.ceil(MAX_CLUSTER_SKILL_CHUNK_BYTES / 3) * 4)
+      .refine((value) => {
+        if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return false
+        return Buffer.from(value, 'base64').byteLength <= MAX_CLUSTER_SKILL_CHUNK_BYTES
+      }, 'invalid or oversized base64 chunk'),
+    final: z.boolean()
+  })
+  .strict()
+
 const SelectionsSchema = z.array(z.string().min(1).max(128)).max(MAX_CLUSTER_SKILL_SELECTIONS)
 const CommitSchema = z.string().regex(/^[a-f0-9]{40}$/, { message: 'must be a full lowercase SHA-1' })
 const BundleSha256Schema = z
@@ -304,6 +329,7 @@ export const ClusterSkillRequestSchema = z.discriminatedUnion('op', [
   ClusterSkillBeginSchema,
   ClusterSkillManifestSchema,
   ClusterSkillUploadSchema,
+  ClusterSkillUploadArchiveSchema,
   ClusterSkillReconcileSchema,
   ClusterSkillVerifySchema,
   ClusterSkillPriorSchema,
@@ -320,6 +346,9 @@ export const ClusterSkillManifestReplySchema = z
   .strict()
 export const ClusterSkillUploadReplySchema = z
   .object({ received: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_FILE_BYTES), complete: z.boolean() })
+  .strict()
+export const ClusterSkillUploadArchiveReplySchema = z
+  .object({ received: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_TOTAL_BYTES), complete: z.boolean() })
   .strict()
 /** Why a Source was skipped (source-cache.md §11): an enumerated code, never Git's or the CLI's raw output. */
 export const SkillSkipCodeSchema = z.enum([
@@ -500,11 +529,13 @@ export type ClusterSkillManifest = z.infer<typeof ClusterSkillManifestSchema>
 export type ClusterSkillManifestReply = z.infer<typeof ClusterSkillManifestReplySchema>
 export type ClusterSkillFile = z.infer<typeof ClusterSkillFileSchema>
 export type ClusterSkillUpload = z.infer<typeof ClusterSkillUploadSchema>
+export type ClusterSkillUploadArchive = z.infer<typeof ClusterSkillUploadArchiveSchema>
 export type ClusterSkillReconcile = z.infer<typeof ClusterSkillReconcileSchema>
 export type ClusterSkillVerify = z.infer<typeof ClusterSkillVerifySchema>
 export type ClusterSkillRequest = z.infer<typeof ClusterSkillRequestSchema>
 export type ClusterSkillBeginReply = z.infer<typeof ClusterSkillBeginReplySchema>
 export type ClusterSkillUploadReply = z.infer<typeof ClusterSkillUploadReplySchema>
+export type ClusterSkillUploadArchiveReply = z.infer<typeof ClusterSkillUploadArchiveReplySchema>
 export type ClusterSkillReconcileReply = z.infer<typeof ClusterSkillReconcileResultSchema>
 export type ClusterSkillSkippedSource = z.infer<typeof ClusterSkillSkippedSourceSchema>
 export type ClusterSkillSource = z.infer<typeof ClusterSkillSourceSchema>

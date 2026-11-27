@@ -454,6 +454,7 @@ describe('shim handshake', () => {
         'cluster-skills-v1',
         'cluster-skills-v2',
         'cluster-skills-v3',
+        'cluster-skills-archive-v1',
         'source-cache-bundle-v1',
         'skill-git-in-pod-v1',
         'skill-git-writeback-v1',

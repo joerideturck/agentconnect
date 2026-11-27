@@ -18,6 +18,7 @@ import {
   isGitPlanReconcile,
   skillControlPages,
   skillReplyExtras,
+  ClusterSkillUploadArchiveReplySchema,
   ClusterSkillUploadReplySchema,
   ClusterSkillVerifyReplySchema,
   LEGACY_MAX_CLUSTER_SKILL_FILES,
@@ -68,7 +69,9 @@ export class ClusterSkillClient {
     // Present only with the `skills-git-writeback` grant: uploads and discards the handles a Git plan reply offers.
     readonly writeBack?: SkillWriteBackStager,
     // Mirrors the `skills-git-gitlab` grant: a plan entry may name the host it reads through the proxy route.
-    readonly gitlabPlans = false
+    readonly gitlabPlans = false,
+    // Mirrors the `skills-archive` grant: the shim takes an operation's declared files as one gzip archive.
+    readonly archive = false
   ) {}
 
   /** What the BOUND image admits, so a caller can drop one oversized source instead of failing a launch. */
@@ -119,6 +122,30 @@ export class ClusterSkillClient {
         throw new Error('cluster skill shim returned an inconsistent upload receipt')
       }
       offset = reply.received
+    }
+  }
+
+  /** Uploads an operation's whole archive, chunk by chunk, each acknowledged before the next. */
+  async uploadArchive(operationId: string, handle: string, archive: Buffer): Promise<void> {
+    let offset = 0
+    while (offset < archive.length || offset === 0) {
+      const chunk = archive.subarray(offset, offset + MAX_CLUSTER_SKILL_CHUNK_BYTES)
+      const final = offset + chunk.length === archive.length
+      const reply = ClusterSkillUploadArchiveReplySchema.parse(
+        await this.requester.request('skills', {
+          op: 'upload-archive',
+          operationId,
+          handle,
+          offset,
+          data: chunk.toString('base64'),
+          final
+        })
+      )
+      if (reply.received !== offset + chunk.length || reply.complete !== final) {
+        throw new Error('cluster skill shim returned an inconsistent archive receipt')
+      }
+      offset = reply.received
+      if (final) return
     }
   }
 
