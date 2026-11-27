@@ -44,6 +44,16 @@ describe('CpCronRegistry (memory-only)', () => {
     expect(reg.askerOf('missing')).toBeUndefined()
   })
 
+  it("knows a schedule's creator email and where it posts, through a replace", () => {
+    const { reg } = makeReg()
+    const target = { platform: 'slack', channel: 'D1', integrationId: 'i1' }
+    reg.upsert(cron('c1', A1, { ownerEmail: 'jan@qargo.com', target }))
+    expect(reg.ownerOf('c1')).toEqual({ email: 'jan@qargo.com', target })
+    reg.upsert(cron('c1'))
+    expect(reg.ownerOf('c1')).toEqual({})
+    expect(reg.ownerOf('missing')).toBeUndefined()
+  })
+
   it('preserves platform/integration targets in the in-memory definition', () => {
     const { reg } = makeReg()
     reg.upsert(cron('c1', A1, { target: { platform: 'discord', channel: 'C1', integrationId: 'i1' } }))

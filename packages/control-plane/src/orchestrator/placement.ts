@@ -59,6 +59,7 @@ import type {
   IntegrationChannelRecord,
   SessionRepo
 } from '../persistence/ports.js'
+import { isSyntheticEmail } from '../persistence/ports.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import {
   decisionBundleOf,
@@ -168,7 +169,8 @@ export function cronToUpsert(c: CronRecord): CronUpsert | null {
     // Its runs read as the person who last set what it does, else its creator (assistant-mode.md §5.5).
     ...((c.lastModifiedBy?.userId ?? c.createdByUserId)
       ? { askerUserId: c.lastModifiedBy?.userId ?? c.createdByUserId! }
-      : {})
+      : {}),
+    ...(c.createdBy?.email && !isSyntheticEmail(c.createdBy.email) ? { ownerEmail: c.createdBy.email } : {})
   }
 }
 

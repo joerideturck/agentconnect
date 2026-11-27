@@ -1203,6 +1203,14 @@ describe('cronToUpsert asker (assistant-mode.md §5.5)', () => {
     expect(cronToUpsert(cron({}))).not.toHaveProperty('askerUserId')
   })
 
+  it("carries its creator's email, not a later editor's, and none for a synthetic or missing creator", () => {
+    const creator = { userId: 'user-creator', displayName: null, email: 'c@example.test' }
+    const editor = { userId: 'user-editor', displayName: null, email: 'e@example.test' }
+    expect(cronToUpsert(cron({ createdBy: creator, lastModifiedBy: editor }))?.ownerEmail).toBe('c@example.test')
+    expect(cronToUpsert(cron({ lastModifiedBy: editor }))).not.toHaveProperty('ownerEmail')
+    expect(cronToUpsert(cron({ createdBy: { ...creator, email: 'x@oidc.local' } }))).not.toHaveProperty('ownerEmail')
+  })
+
   it('carries the display name the anchor shows in place of the prompt, and none for an unnamed row', () => {
     expect(cronToUpsert(cron({ name: 'weekly-deploy-report' }))?.name).toBe('weekly-deploy-report')
     expect(cronToUpsert(cron({}))).not.toHaveProperty('name')

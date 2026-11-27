@@ -41,7 +41,9 @@ export const CronUpsert = z.object({
   name: z.string().min(1).max(120).optional(),
   enabled: z.boolean().default(true),
   // The console user its runs read as (assistant-mode.md §5.5): its last human editor, else its creator; absent ⇒ no person.
-  askerUserId: z.string().min(1).max(256).optional()
+  askerUserId: z.string().min(1).max(256).optional(),
+  // Its creator's email, so a daemon can run the schedule on that person's own model sign-in; absent ⇒ no creator.
+  ownerEmail: z.string().min(3).max(320).optional()
 })
 export type CronUpsert = z.infer<typeof CronUpsert>
 

@@ -101,7 +101,8 @@ describe('cron replication CP→daemon (REST → cron/upsert·remove)', () => {
       trigger: 'post the standup summary',
       enabled: true,
       // The person who set what it does: its runs read as them.
-      askerUserId: expect.any(String)
+      askerUserId: expect.any(String),
+      ownerEmail: expect.any(String)
     })
   })
 

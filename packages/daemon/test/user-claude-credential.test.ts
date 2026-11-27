@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  lookupEmailClaudeCredential,
   lookupUserClaudeCredential,
   userClaudeFallbackNotice,
+  userClaudeEmailSecretName,
   userClaudeSecretName
 } from '../src/runtimes/user-claude-credential.js'
 
@@ -109,5 +111,28 @@ describe('userClaudeFallbackNotice', () => {
     ).toBeUndefined()
     expect(userClaudeFallbackNotice({ ...base, reason: 'error' })).toBeUndefined()
     expect(userClaudeFallbackNotice({ ...base, reason: undefined })).toBeUndefined()
+  })
+})
+
+describe('lookupEmailClaudeCredential', () => {
+  it('names the secret by the email local part as the account page does', () => {
+    expect(userClaudeEmailSecretName('Jan.Peeters@qargo.com')).toBe('claude-token-email-jan-peeters')
+    expect(userClaudeEmailSecretName('jan+x@qargo.com')).toBeUndefined()
+  })
+
+  it("returns the token saved under a schedule creator's email", async () => {
+    const { fetchImpl, urls } = fakeFetch(secretResponse(saved))
+    const lookup = await lookupEmailClaudeCredential('jan.peeters@qargo.com', { project: 'p', now: NOW, fetchImpl })
+    expect(lookup.credential).toMatchObject({ token: 'sk-ant-oat01-abc', slackUserId: 'U0ABC' })
+    expect(urls[1]).toContain('/secrets/claude-token-email-jan-peeters/versions/latest:access')
+  })
+
+  it("misses a namesake's token from another domain", async () => {
+    const { fetchImpl } = fakeFetch(secretResponse(saved))
+    expect(await lookupEmailClaudeCredential('jan.peeters@example.com', { project: 'p', now: NOW, fetchImpl })).toEqual(
+      {
+        reason: 'missing'
+      }
+    )
   })
 })

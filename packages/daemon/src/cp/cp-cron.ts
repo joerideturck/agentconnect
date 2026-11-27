@@ -8,12 +8,15 @@ interface Entry {
   cron: CronDef
   /** The console user its runs read as (assistant-mode.md §5.5). */
   askerUserId?: string
+  /** Its creator's email, whose own model sign-in its runs use when they saved one. */
+  ownerEmail?: string
 }
 
 const entryOf = (cron: CronUpsert): Entry => ({
   agentId: cron.agentId,
   cron: toCronDef(cron),
-  ...(cron.askerUserId ? { askerUserId: cron.askerUserId } : {})
+  ...(cron.askerUserId ? { askerUserId: cron.askerUserId } : {}),
+  ...(cron.ownerEmail ? { ownerEmail: cron.ownerEmail } : {})
 })
 
 export class CpCronRegistry {
@@ -46,6 +49,16 @@ export class CpCronRegistry {
   /** The console user a schedule's runs read as; undefined when its row records no person. */
   askerOf(cronId: string): string | undefined {
     return this.entries.get(cronId)?.askerUserId
+  }
+
+  /** Who a schedule's runs are for: its creator's email, and where it posts; undefined for a schedule not held. */
+  ownerOf(cronId: string): { email?: string; target?: CronDef['target'] } | undefined {
+    const entry = this.entries.get(cronId)
+    if (!entry) return undefined
+    return {
+      ...(entry.ownerEmail ? { email: entry.ownerEmail } : {}),
+      ...(entry.cron.target ? { target: entry.cron.target } : {})
+    }
   }
 
   forAgent(agentId: string): CronDef[] {

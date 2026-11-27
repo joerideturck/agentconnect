@@ -933,7 +933,11 @@ import {
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { runtimeCredentialsConfigured } from './runtimes/runtime-credential-discovery.js'
 import { sharedCredentialProfile } from './runtimes/runtime-credential-sources.js'
-import { lookupUserClaudeCredential, userClaudeFallbackNotice } from './runtimes/user-claude-credential.js'
+import {
+  lookupEmailClaudeCredential,
+  lookupUserClaudeCredential,
+  userClaudeFallbackNotice
+} from './runtimes/user-claude-credential.js'
 import { resolveK8sPlaneSettings, startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import { ComputerPool, computerPoolSettings } from './k8s/computer-pool.js'
 import { SandboxApi } from './k8s/sandbox-api.js'
@@ -9718,10 +9722,16 @@ export class Daemon {
     // A new session's row is written after its host starts, so its request names the starter until then.
     const session = await this.store.getSession(sessionKey)
     const opener = session ? { platform: session.platform, id: session.triggeredBy } : starter
-    const slackUserId = opener?.platform === 'slack' ? (opener.id ?? undefined) : undefined
-    const lookup = slackUserId
-      ? await lookupUserClaudeCredential(slackUserId, { project, now: this.clock.now() })
-      : undefined
+    const cronId = opener?.id?.startsWith('cron:') ? opener.id.slice('cron:'.length) : undefined
+    const cronOwner = cronId ? await this.cronClaudeOwner(agent.id, cronId) : undefined
+    const slackUserId =
+      cronOwner?.slackUserId ?? (!cronId && opener?.platform === 'slack' ? (opener.id ?? undefined) : undefined)
+    const lookupOpts = { project, now: this.clock.now() }
+    const lookup = cronOwner?.email
+      ? await lookupEmailClaudeCredential(cronOwner.email, lookupOpts)
+      : slackUserId
+        ? await lookupUserClaudeCredential(slackUserId, lookupOpts)
+        : undefined
     const credential = lookup?.credential
     process.stdout.write(
       `${JSON.stringify({
@@ -9730,10 +9740,10 @@ export class Daemon {
         session_key: sessionKey,
         agent_id: agent.id,
         source: credential ? 'user' : 'daemon',
-        reason: !lookup ? 'not_slack' : lookup.credential ? null : lookup.reason,
+        reason: !lookup ? (cronId ? 'no_cron_owner' : 'not_slack') : lookup.credential ? null : lookup.reason,
         email: credential?.email ?? null,
         slack_team_id: credential?.slackTeamId ?? null,
-        slack_user_id: slackUserId ?? null,
+        slack_user_id: credential?.slackUserId ?? slackUserId ?? null,
         expires_at: credential?.expiresAt ?? null
       })}\n`
     )
@@ -9753,6 +9763,23 @@ export class Daemon {
       })().catch((err: unknown) => this.log.warn(`claude credential notice failed for ${sessionKey}: ${String(err)}`))
     }
     return credential?.token
+  }
+
+  /**
+   * Whose sign-in a schedule's run uses: its creator's, else the person of the Slack direct message it posts into (a
+   * schedule an agent saved from that conversation has no creator). Undefined when it is no one's.
+   */
+  private async cronClaudeOwner(
+    agentId: string,
+    cronId: string
+  ): Promise<{ email?: string; slackUserId?: string } | undefined> {
+    const owner = this.cpCrons?.ownerOf(cronId)
+    if (owner?.email) return { email: owner.email }
+    const target = owner?.target
+    if (target?.platform !== 'slack' || !target.channel.startsWith('D')) return undefined
+    const conn = this.replyConnFor(agentId, target.integrationId) as Partial<SlackConnection> | undefined
+    const info = await conn?.getChannelInfo?.(target.channel).catch(() => undefined)
+    return info?.isIm && info.user ? { slackUserId: info.user } : undefined
   }
 
   // Construct and memoize the host with its session workspace and launch credentials.
